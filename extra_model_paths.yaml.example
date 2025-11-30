@@ -1,3 +1,5 @@
+#ultralytics: custom_nodes/ComfyUI-Impact-Subpack/models/ultralytics
+
 #Rename this to extra_model_paths.yaml and ComfyUI will load it
 
 #config for comfyui
