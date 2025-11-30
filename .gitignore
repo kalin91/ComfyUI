@@ -26,6 +26,6 @@ filtered-openapi.yaml
 uv.lock
 **/.mypy_cache
 workspace_temp/
-/models/
+models
 out/
 runs
