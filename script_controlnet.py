@@ -1,63 +1,61 @@
+"""Script to run a ControlNet flow with Triple CLIP and FaceDetailer integration."""
+
 import inspect
 import os
 from sys import argv
 import torch
 import numpy as np
-from PIL import Image, ImageOps, ImageSequence
+from PIL import Image
 
 import comfy.sd
-import comfy.model_management
 import comfy.sample
-import comfy.controlnet
 import folder_paths
-import node_helpers
 import prompt_server_mocked as _  # noqa: F401
 
-from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
-from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.open_pose import OpenposeDetector
 
 from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer, SAMLoader
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
 from flow import Flow
 
 # Paths - User to replace these
-CHECKPOINT_PATH = "models/checkpoints/sd3.5_medium.safetensors"
-CLIP_G_PATH = "models/clip/sd35m/clip_g.safetensors"
-CLIP_L_PATH = "models/clip/sd35m/clip_l.safetensors"
-T5_PATH = "models/clip/sd35m/t5xxl_fp16.safetensors"
-CONTROLNET_PATH = "models/controlnet/SD3.5m/bokeh_pose_cn.safetensors"
+CHECKPOINT_PATH = "sd3.5_medium.safetensors"
+CLIP_G_PATH = "sd35m/clip_g.safetensors"
+CLIP_L_PATH = "sd35m/clip_l.safetensors"
+T5_PATH = "sd35m/t5xxl_fp16.safetensors"
 
 # Register Model Paths
 folder_paths.add_model_folder_path("sams", "/data/home2/kalin/models/sams")
 folder_paths.add_model_folder_path("ultralytics", "/data/home2/kalin/models/ultralytics")
 folder_paths.add_model_folder_path("ultralytics_bbox", "/data/home2/kalin/models/ultralytics/bbox")
 
-OUTPUT_DIR = "output"
+OUTPUT_DIR = "workspace_temp/output"
 TEMP_DIR = "workspace_temp/temp"
 
 
-def main(filename: str = None):
-    # Helper to resolve path or use as is
-    def resolve_path(folder_type, filename):
-        try:
-            return folder_paths.get_full_path_or_raise(folder_type, filename)
-        except Exception:
-            return filename
+def main(filename: str, steps: int) -> list[str]:
+    """Main function to run the ControlNet flow."""
+    created_images: list[str] = []
+
+    if not os.path.exists(TEMP_DIR):
+        os.makedirs(TEMP_DIR)
+
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
 
     flow: Flow = Flow(filename)
 
     # 1. Load Model and VAE
     print("Loading Checkpoint...")
-    ckpt_path = resolve_path("checkpoints", CHECKPOINT_PATH)
+    ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", CHECKPOINT_PATH)
     model, _, vae, _ = comfy.sd.load_checkpoint_guess_config(
         ckpt_path, output_vae=True, output_clip=False, embedding_directory=folder_paths.get_folder_paths("embeddings")
     )
 
     # 2. Load Triple CLIP
     print("Loading CLIPs...")
-    clip_path1 = resolve_path("text_encoders", CLIP_G_PATH)
-    clip_path2 = resolve_path("text_encoders", CLIP_L_PATH)
-    clip_path3 = resolve_path("text_encoders", T5_PATH)
+    clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_G_PATH)
+    clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_L_PATH)
+    clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", T5_PATH)
 
     clip = comfy.sd.load_clip(
         ckpt_paths=[clip_path1, clip_path2, clip_path3],
@@ -67,15 +65,24 @@ def main(filename: str = None):
     # Run preprocessor
     pose_image_tensor = flow.openpose_pose.tensor()
 
-    # Save preview of pose image
-    if not os.path.exists(TEMP_DIR):
-        os.makedirs(TEMP_DIR)
-
-    pose_preview_path = os.path.join(TEMP_DIR, "pose_preview.png")
-    pose_img_np = 255.0 * pose_image_tensor[0].cpu().numpy()
-    pose_img_pil = Image.fromarray(np.clip(pose_img_np, 0, 255).astype(np.uint8))
-    pose_img_pil.save(pose_preview_path)
-    print(f"Saved pose preview to {pose_preview_path}")
+    h: int = 0
+    pose_file_saved: bool = False
+    while not pose_file_saved and h < 40:
+        pose_filename = os.path.join(TEMP_DIR, f"{filename}_pose_preview_{h}.png")
+        if os.path.exists(pose_filename):
+            h += 1
+            continue  # Skip if already exists
+        img_np = 255.0 * pose_image_tensor[0].cpu().numpy()
+        img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
+        img_pil.save(pose_filename)
+        print(f"Saved pose preview to {pose_filename}")
+        pose_file_saved = True
+        created_images.append(pose_filename)
+        break
+    if not pose_file_saved:
+        raise RuntimeError("Failed to save pose preview after multiple attempts. clean up temp files.")
+    if len(created_images) >= steps:
+        return created_images
 
     # 6. Encode Prompts
     positive_prompt = flow.positive
@@ -93,7 +100,7 @@ def main(filename: str = None):
 
     latent_image = flow.empty_latent.latent
 
-    for current_sampler in flow.simple_k_sampler:
+    for sampler_idx, current_sampler in enumerate(flow.simple_k_sampler):
 
         # Prepare noise
         noisy_latent_image = comfy.sample.fix_empty_latent_channels(model, latent_image)
@@ -126,27 +133,36 @@ def main(filename: str = None):
 
         latent_image = comfy.sample.sample(**sampler_arguments)
 
-    # 10. Decode
-    print("Decoding...")
-    images = vae.decode(latent_image)
-    print(f"VAE Output Shape: {images.shape}")
+        # 10. Decode
+        print("Decoding...")
+        images = vae.decode(latent_image.clone())
+        print(f"VAE Output Shape: {images.shape}")
 
-    # Ensure BHWC (Batch, Height, Width, Channels)
-    if images.shape[1] == 3:
-        images = images.movedim(1, -1)
+        # Ensure BHWC (Batch, Height, Width, Channels)
+        if images.shape[1] == 3:
+            images = images.movedim(1, -1)
 
-    print(f"Final Image Shape: {images.shape}")
+        print(f"Final Image Shape: {images.shape}")
 
-    # Save Refiner Output
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
-
-    for i, image in enumerate(images):
-        img_np = 255.0 * image.cpu().numpy()
-        img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
-        output_path = os.path.join(OUTPUT_DIR, f"refiner_output_{i}.png")
-        img_pil.save(output_path)
-        print(f"Saved refiner output to {output_path}")
+        j: int = 0
+        file_saved: bool = False
+        while not file_saved and j < 40:
+            for i, image in enumerate(images):
+                sampler_file_name = os.path.join(TEMP_DIR, f"{filename}_sampler_{sampler_idx}_{i}_{j}.png")
+                if os.path.exists(sampler_file_name):
+                    j += 1
+                    continue  # Skip if already exists
+                img_np = 255.0 * image.cpu().numpy()
+                img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
+                img_pil.save(sampler_file_name)
+                print(f"Saved refiner output to {sampler_file_name}")
+                file_saved = True
+                created_images.append(sampler_file_name)
+                break
+        if not file_saved:
+            raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")         
+        if len(created_images) >= steps:
+            return created_images
 
     # 10.5 FaceDetailer
     print("Running FaceDetailer...")
@@ -196,18 +212,28 @@ def main(filename: str = None):
     result_images = face_detailer.doit(**face_arguments)[0]
 
     # 11. Save Image
-    print("Saving Images...")
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
-
-    for i, image in enumerate(result_images):
-        img_np = 255.0 * image.cpu().numpy()
-        img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
-        output_path = os.path.join(OUTPUT_DIR, f"output_{i}.png")
-        img_pil.save(output_path)
-        print(f"Saved to {output_path}")
+    k: int = 0
+    output_file_saved: bool = False
+    while not output_file_saved and k < 40:
+        for i, image in enumerate(result_images):
+            output_file_name = os.path.join(OUTPUT_DIR, f"{filename}_{i}_{k}.png")
+            if os.path.exists(output_file_name):
+                k += 1
+                continue  # Skip if already exists
+            img_np = 255.0 * image.cpu().numpy()
+            img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
+            img_pil.save(output_file_name)
+            print(f"Saved refiner output to {output_file_name}")
+            output_file_saved = True
+            created_images.append(output_file_name)
+            break
+    if not output_file_saved:
+        raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")
+    if len(created_images) >= steps:
+        return created_images
 
     print("Done.")
+    return created_images
 
 
 if __name__ == "__main__":
