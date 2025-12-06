@@ -1,0 +1,67 @@
+{
+  "positive": "Renaissance oil painting style, highly detailed.\nA beautiful young queen with a small and elegant crown, holding a long dark wood staff that extends from her left hand straight to the ground, with bottom tip firmly on the floor. Queen's left hand firmly gripping the upper third of the staff, with fingers wrapped naturally around the shaft, that held vertically, no bending, no curved, no twisted, no organic staff shapes. it has upper part broken, with subtle carved patterns along its shaft. Queen's left hand empty. The queen has a sexy, delicate build with a willpower expression, full of confidence and charisma. \nThe queen is viewed from a low-angle shot, seated on a grand, monolithic high-back marbel seat without armrests, it has subtle gold inlays, and has completely smooth sides, no legs and no separate supports.\nBehind the seat are large windows with light curtains through which a warm stream of sunlight shines through, wooden and gold architectural pilars glow softly. Potted plants and tapestries with natural motifs below the windows. A marble lion on a pedestal in the background at the top",
+  "negative": "blur, fog, Out-of-focus background, pants",
+  "openpose_pose": {
+    "image_name": "reina_basto.jpeg",
+    "detect_hands": true,
+    "detect_body": true,
+    "detect_face": true,
+    "resolution": 768,
+    "scale_stick_for_xinsr_cn": true
+  },
+  "apply_control_net": {
+    "controlnet_path": "SD3.5m/bokeh_pose_cn.safetensors",
+    "strength": 0.61,
+    "start_percentage": 0.0,
+    "end_percentage": 0.586
+  },
+  "empty_latent": {
+    "width": 592,
+    "height": 1024,
+    "batch_size": 1
+  },
+  "simple_k_sampler": [
+    {
+      "seed": 878324280905954,
+      "steps": 30,
+      "cfg": 8.4,
+      "sampler_name": "dpm_2_ancestral",
+      "scheduler": "sgm_uniform",
+      "denoise": 1.0
+    },
+    {
+      "seed": 878324280905954,
+      "steps": 34,
+      "cfg": 8.5,
+      "sampler_name": "dpm_2_ancestral",
+      "scheduler": "sgm_uniform",
+      "denoise": 0.7
+    }
+  ],
+  "face_detailer": {
+    "seed": 878324280905954,
+    "steps": 20,
+    "cfg": 8.0,
+    "sampler_name": "euler_ancestral",
+    "scheduler": "normal",
+    "denoise": 0.5,
+    "guide_size": 592,
+    "guide_size_for": true,
+    "max_size": 1024,
+    "feather": 5,
+    "noise_mask": true,
+    "force_inpaint": false,
+    "drop_size": 10,
+    "cycle": 1,
+    "bbox_threshold": 0.6,
+    "bbox_dilation": 15,
+    "bbox_crop_factor": 3.0,
+    "sam_detection_hint": "center-1",
+    "sam_dilation": 0,
+    "sam_threshold": 0.93,
+    "sam_bbox_expansion": 0,
+    "sam_mask_hint_threshold": 0.93,
+    "sam_mask_hint_use_negative": "False",
+    "wildcard": ""
+  }
+}
