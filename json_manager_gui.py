@@ -5,7 +5,7 @@ import os
 import sys
 import uuid
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 from PIL import Image, ImageTk
 from typing import Any
 import torch
@@ -418,11 +418,25 @@ class JSONManagerApp:
             messagebox.showerror("Error", f"Failed to save file:\n{e}")
 
     def _save_as_file(self) -> None:
-        """Save as a new file with UUID name."""
+        """Save as a new file with user provided name or UUID."""
         try:
             data = self.json_editor.get_data()
-            new_uuid = str(uuid.uuid4())
-            new_filename = f"{new_uuid}.json"
+
+            filename = simpledialog.askstring("Save As", "Enter filename (leave blank for UUID):", parent=self.root)
+            if filename is None:
+                return
+
+            filename = filename.strip()
+
+            if not filename:
+                new_uuid = str(uuid.uuid4())
+                new_filename = f"{new_uuid}.json"
+            else:
+                if " " in filename:
+                    messagebox.showerror("Error", "Spaces are not allowed in filename")
+                    return
+                new_filename = filename if filename.endswith(".json") else f"{filename}.json"
+
             new_filepath = os.path.join(PATH_TO_JSONS, new_filename)
 
             with open(new_filepath, "w", encoding="utf-8") as f:
