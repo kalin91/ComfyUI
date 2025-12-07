@@ -11,8 +11,6 @@ import torch
 import json_manager_starter
 import logging
 
-# Path to JSON files
-PATH_TO_JSONS = "./images"
 
 
 class JSONTreeEditor(ttk.Frame):
@@ -376,10 +374,7 @@ class JSONManagerApp:
     def _refresh_file_list(self) -> None:
         """Refresh the list of JSON files."""
         try:
-            if not os.path.exists(PATH_TO_JSONS):
-                os.makedirs(PATH_TO_JSONS)
-
-            files = [f for f in os.listdir(PATH_TO_JSONS) if f.endswith(".json")]
+            files = [f for f in os.listdir(json_manager_starter.get_main_images_path()) if f.endswith(".json")]
             files.sort()
             self.file_combo["values"] = files
             self.status_var.set(f"Found {len(files)} JSON files")
@@ -392,7 +387,7 @@ class JSONManagerApp:
         if not filename:
             return
 
-        filepath = os.path.join(PATH_TO_JSONS, filename)
+        filepath = os.path.join(json_manager_starter.get_main_images_path(), filename)
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -440,7 +435,7 @@ class JSONManagerApp:
                     return
                 new_filename = filename if filename.endswith(".json") else f"{filename}.json"
 
-            new_filepath = os.path.join(PATH_TO_JSONS, new_filename)
+            new_filepath = os.path.join(json_manager_starter.get_main_images_path(), new_filename)
 
             with open(new_filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -477,7 +472,7 @@ class JSONManagerApp:
             from script_controlnet import main as run_controlnet
 
             with torch.inference_mode():
-                image_paths = run_controlnet(filename_without_ext, steps)
+                image_paths = run_controlnet(json_manager_starter.get_main_images_path(), filename_without_ext, steps)
 
             if image_paths:
                 self.image_viewer.display_images(image_paths)
@@ -490,6 +485,7 @@ class JSONManagerApp:
             self.status_var.set("Execution failed")
             messagebox.showerror("Execution Error", f"Failed to execute:\n{e}")
             # log exception stack trace
+            logging.exception("Execution failed")
             raise e
 
 

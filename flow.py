@@ -2,12 +2,12 @@
 
 import os
 import json
-from mimic_classes import OpenPosePose, ApplyControlNet, EmptyLatent, SimpleKSampler, FaceDetailer
 import logging
-IMAGES_PATH = os.path.join(os.getcwd(), "images/")
+from mimic_classes import OpenPosePose, ApplyControlNet, EmptyLatent, SimpleKSampler, FaceDetailer
 
 
 class Flow:
+    """Class representing a flow loaded from a JSON file.""" ""
 
     @property
     def positive(self) -> str:
@@ -46,12 +46,12 @@ class Flow:
 
     def __init__(
         self,
-        image_id: str,
+        filepath: str,
     ):
-        filepath = os.path.join(IMAGES_PATH, image_id + ".json")
-        
+        """Initializes the Flow instance by loading data from a JSON file."""
+
         assert os.path.exists(filepath), f"Flow file {filepath} does not exist."
-        logging.info(f"Loading flow from {filepath}...")
+        logging.info("Loading flow from %s", filepath)
         with open(filepath, "r", encoding="utf-8") as file:
             json_props = json.load(file)
         self._positive = json_props["positive"]

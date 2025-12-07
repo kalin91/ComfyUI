@@ -1,4 +1,5 @@
 """Applies custom folder paths based on command-line arguments and configuration files."""
+
 import itertools
 import logging
 import os
@@ -6,10 +7,6 @@ import shutil
 import folder_paths
 import utils.extra_config
 from comfy.cli_args import args
-
-
-# Register Model Paths
-
 
 
 def cleanup_temp() -> None:
@@ -62,7 +59,7 @@ def apply_custom_paths() -> None:
         user_dir = os.path.abspath(args.user_directory)
         logging.info("Setting user directory to: %s", user_dir)
         folder_paths.set_user_directory(user_dir)
-        
+
     # verify directories exist
     for dir_path in [
         folder_paths.get_temp_directory(),
@@ -71,3 +68,12 @@ def apply_custom_paths() -> None:
         folder_paths.get_user_directory(),
     ]:
         os.makedirs(dir_path, exist_ok=True)
+
+
+def get_main_images_path() -> str:
+    """Returns the path to the main images directory."""
+
+    ret_path: str = os.path.join(folder_paths.get_user_directory(), "images")
+    if not os.path.exists(ret_path):
+        os.makedirs(ret_path)
+    return ret_path

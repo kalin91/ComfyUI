@@ -24,11 +24,11 @@ CLIP_L_PATH = "sd35m/clip_l.safetensors"
 T5_PATH = "sd35m/t5xxl_fp16.safetensors"
 
 
-def main(filename: str, steps: int) -> list[str]:
+def main(path_file: str, filename: str, steps: int) -> list[str]:
     """Main function to run the ControlNet flow."""
     created_images: list[str] = []
 
-    flow: Flow = Flow(filename)
+    flow: Flow = Flow(os.path.join(path_file, f"{filename}.json"))
 
     # 1. Load Model and VAE
     print("Loading Checkpoint...")
