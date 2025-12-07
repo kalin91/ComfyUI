@@ -2,13 +2,14 @@
 
 import json
 import os
-import sys
+from typing import Any
 import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from PIL import Image, ImageTk
-from typing import Any
 import torch
+import json_manager_starter
+import logging
 
 # Path to JSON files
 PATH_TO_JSONS = "./images"
@@ -85,7 +86,9 @@ class JSONTreeEditor(ttk.Frame):
 
             elif isinstance(value, list):
                 # List of items
-                label = ttk.Label(frame, text=f"▼ {key}: (list with {len(value)} items)", font=("TkDefaultFont", 10, "bold"))
+                label = ttk.Label(
+                    frame, text=f"▼ {key}: (list with {len(value)} items)", font=("TkDefaultFont", 10, "bold")
+                )
                 label.pack(anchor="w")
                 self.list_entries[full_key] = []
 
@@ -225,7 +228,7 @@ class JSONTreeEditor(ttk.Frame):
 
     def _parse_value(self, value_str: str) -> Any:
         """Parse a string value to its appropriate type.
-        
+
         Note: Boolean conversion is NOT done here because booleans are handled
         separately via BooleanVar checkboxes. Strings like "True" or "False"
         should remain as strings.
@@ -486,11 +489,15 @@ class JSONManagerApp:
         except Exception as e:
             self.status_var.set("Execution failed")
             messagebox.showerror("Execution Error", f"Failed to execute:\n{e}")
+            # log exception stack trace
+            raise e
 
 
 def main() -> None:
     """Main entry point."""
     root = tk.Tk()
+
+    json_manager_starter.apply_custom_paths()
 
     # Set theme
     style = ttk.Style()

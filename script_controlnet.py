@@ -23,24 +23,10 @@ CLIP_G_PATH = "sd35m/clip_g.safetensors"
 CLIP_L_PATH = "sd35m/clip_l.safetensors"
 T5_PATH = "sd35m/t5xxl_fp16.safetensors"
 
-# Register Model Paths
-folder_paths.add_model_folder_path("sams", "/data/home2/kalin/models/sams")
-folder_paths.add_model_folder_path("ultralytics", "/data/home2/kalin/models/ultralytics")
-folder_paths.add_model_folder_path("ultralytics_bbox", "/data/home2/kalin/models/ultralytics/bbox")
-
-OUTPUT_DIR = "workspace_temp/output"
-TEMP_DIR = "workspace_temp/temp"
-
 
 def main(filename: str, steps: int) -> list[str]:
     """Main function to run the ControlNet flow."""
     created_images: list[str] = []
-
-    if not os.path.exists(TEMP_DIR):
-        os.makedirs(TEMP_DIR)
-
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
 
     flow: Flow = Flow(filename)
 
@@ -68,7 +54,7 @@ def main(filename: str, steps: int) -> list[str]:
     h: int = 0
     pose_file_saved: bool = False
     while not pose_file_saved and h < 40:
-        pose_filename = os.path.join(TEMP_DIR, f"{filename}_pose_preview_{h}.png")
+        pose_filename = os.path.join(folder_paths.get_temp_directory(), f"{filename}_pose_preview_{h}.png")
         if os.path.exists(pose_filename):
             h += 1
             continue  # Skip if already exists
@@ -148,7 +134,7 @@ def main(filename: str, steps: int) -> list[str]:
         file_saved: bool = False
         while not file_saved and j < 40:
             for i, image in enumerate(images):
-                sampler_file_name = os.path.join(TEMP_DIR, f"{filename}_sampler_{sampler_idx}_{i}_{j}.png")
+                sampler_file_name = os.path.join(folder_paths.get_temp_directory(), f"{filename}_sampler_{sampler_idx}_{i}_{j}.png")
                 if os.path.exists(sampler_file_name):
                     j += 1
                     continue  # Skip if already exists
@@ -216,7 +202,7 @@ def main(filename: str, steps: int) -> list[str]:
     output_file_saved: bool = False
     while not output_file_saved and k < 40:
         for i, image in enumerate(result_images):
-            output_file_name = os.path.join(OUTPUT_DIR, f"{filename}_{i}_{k}.png")
+            output_file_name = os.path.join(folder_paths.get_output_directory(), f"{filename}_{i}_{k}.png")
             if os.path.exists(output_file_name):
                 k += 1
                 continue  # Skip if already exists
