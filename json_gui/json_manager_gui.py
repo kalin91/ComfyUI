@@ -2,15 +2,19 @@
 
 import json
 import os
+import logging
 from typing import Any
 import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from PIL import Image, ImageTk
 import torch
-import json_manager_starter
-import logging
+from app.logger import setup_logger
+import json_gui.json_manager_starter as json_manager_starter
+from json_gui.script_controlnet import main as run_controlnet
+from comfy.cli_args import args
 
+setup_logger(log_level=args.verbose, use_stdout=args.log_stdout)
 
 
 class JSONTreeEditor(ttk.Frame):
@@ -469,7 +473,6 @@ class JSONManagerApp:
 
         try:
             # Import and run the main function
-            from script_controlnet import main as run_controlnet
 
             with torch.inference_mode():
                 image_paths = run_controlnet(json_manager_starter.get_main_images_path(), filename_without_ext, steps)
@@ -493,16 +496,10 @@ def main() -> None:
     """Main entry point."""
     root = tk.Tk()
 
-    json_manager_starter.apply_custom_paths()
-
     # Set theme
     style = ttk.Style()
     if "clam" in style.theme_names():
         style.theme_use("clam")
 
-    app = JSONManagerApp(root)
+    JSONManagerApp(root)
     root.mainloop()
-
-
-if __name__ == "__main__":
-    main()

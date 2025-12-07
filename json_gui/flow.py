@@ -3,7 +3,7 @@
 import os
 import json
 import logging
-from mimic_classes import OpenPosePose, ApplyControlNet, EmptyLatent, SimpleKSampler, FaceDetailer
+from json_gui.mimic_classes import OpenPosePose, ApplyControlNet, EmptyLatent, SimpleKSampler, FaceDetailer
 
 
 class Flow:

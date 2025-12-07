@@ -15,7 +15,7 @@ import prompt_server_mocked as _  # noqa: F401
 
 from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer, SAMLoader
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
-from flow import Flow
+from json_gui.flow import Flow
 
 # Paths - User to replace these
 CHECKPOINT_PATH = "sd3.5_medium.safetensors"

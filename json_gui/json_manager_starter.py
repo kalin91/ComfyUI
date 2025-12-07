@@ -20,9 +20,11 @@ def apply_custom_paths() -> None:
     """Applies custom folder paths based on command-line arguments and configuration files."""
 
     if args.temp_directory:
-        temp_dir = os.path.join(os.path.abspath(args.temp_directory), "temp")
+        temp_dir = os.path.abspath(args.temp_directory)
         logging.info("Setting temp directory to: %s", temp_dir)
         folder_paths.set_temp_directory(temp_dir)
+    else:
+        logging.info("Using default temp directory: %s", folder_paths.get_temp_directory())
     cleanup_temp()
     # extra model paths
     extra_model_paths_config_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "extra_model_paths.yaml")
