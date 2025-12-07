@@ -14,6 +14,10 @@ import json_gui.json_manager_starter as json_manager_starter
 from json_gui.script_controlnet import main as run_controlnet
 from comfy.cli_args import args
 
+logger = logging.getLogger()
+if logger.hasHandlers():
+    logger.handlers.clear()
+
 setup_logger(log_level=args.verbose, use_stdout=args.log_stdout)
 
 
