@@ -2,6 +2,7 @@
 
 import inspect
 import os
+import logging
 from sys import argv
 import torch
 import numpy as np
@@ -31,14 +32,14 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
     flow: Flow = Flow(os.path.join(path_file, f"{filename}.json"))
 
     # 1. Load Model and VAE
-    print("Loading Checkpoint...")
+    logging.info("Loading Checkpoint...")
     ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", CHECKPOINT_PATH)
     model, _, vae, _ = comfy.sd.load_checkpoint_guess_config(
         ckpt_path, output_vae=True, output_clip=False, embedding_directory=folder_paths.get_folder_paths("embeddings")
     )
 
     # 2. Load Triple CLIP
-    print("Loading CLIPs...")
+    logging.info("Loading CLIPs...")
     clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_G_PATH)
     clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_L_PATH)
     clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", T5_PATH)
@@ -61,7 +62,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
         img_np = 255.0 * pose_image_tensor[0].cpu().numpy()
         img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
         img_pil.save(pose_filename)
-        print(f"Saved pose preview to {pose_filename}")
+        logging.info(f"Saved pose preview to {pose_filename}")
         pose_file_saved = True
         created_images.append(pose_filename)
         break
@@ -74,7 +75,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
     positive_prompt = flow.positive
     negative_prompt = flow.negative
 
-    print("Encoding prompts...")
+    logging.info("Encoding prompts...")
     tokens_pos = clip.tokenize(positive_prompt)
     cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
 
@@ -120,15 +121,15 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
         latent_image = comfy.sample.sample(**sampler_arguments)
 
         # 10. Decode
-        print("Decoding...")
+        logging.info("Decoding...")
         images = vae.decode(latent_image.clone())
-        print(f"VAE Output Shape: {images.shape}")
+        logging.info(f"VAE Output Shape: {images.shape}")
 
         # Ensure BHWC (Batch, Height, Width, Channels)
         if images.shape[1] == 3:
             images = images.movedim(1, -1)
 
-        print(f"Final Image Shape: {images.shape}")
+        logging.info(f"Final Image Shape: {images.shape}")
 
         j: int = 0
         file_saved: bool = False
@@ -141,7 +142,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
                 img_np = 255.0 * image.cpu().numpy()
                 img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
                 img_pil.save(sampler_file_name)
-                print(f"Saved refiner output to {sampler_file_name}")
+                logging.info(f"Saved refiner output to {sampler_file_name}")
                 file_saved = True
                 created_images.append(sampler_file_name)
                 break
@@ -151,7 +152,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
             return created_images
 
     # 10.5 FaceDetailer
-    print("Running FaceDetailer...")
+    logging.info("Running FaceDetailer...")
 
     # Load Models
     bbox_model_name = "bbox/yolo11x_face_detect2.pt"
@@ -209,7 +210,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
             img_np = 255.0 * image.cpu().numpy()
             img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
             img_pil.save(output_file_name)
-            print(f"Saved refiner output to {output_file_name}")
+            logging.info(f"Saved refiner output to {output_file_name}")
             output_file_saved = True
             created_images.append(output_file_name)
             break
@@ -218,7 +219,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
     if len(created_images) >= steps:
         return created_images
 
-    print("Done.")
+    logging.info("Done.")
     return created_images
 
 

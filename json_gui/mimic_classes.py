@@ -1,6 +1,7 @@
 """Mimic classes for various components."""
 
 import os
+import logging
 from typing import Any
 import torch
 import numpy as np
@@ -55,7 +56,7 @@ class SimpleKSampler:
 
     def to_dict(self) -> dict:
         """Converts the SimpleKSampler instance to a dictionary."""
-        print(
+        logging.info(
             f"Sampling 1 with seed={self._seed}, steps={self._steps}, cfg={self._cfg}, sampler={self._sampler_name}, scheduler={self._scheduler}..."
         )
 
@@ -90,7 +91,7 @@ class EmptyLatent:
     @property
     def latent(self) -> torch.Tensor:
         """Generates and returns an empty latent tensor."""
-        print(f"Creating empty latent {self._width}x{self._height}...")
+        logging.info(f"Creating empty latent {self._width}x{self._height}...")
 
         return torch.zeros(
             [self._batch_size, 16, self._height // 8, self._width // 8],
@@ -129,7 +130,7 @@ class ApplyControlNet:
     def conditionals(self, cond_pos: Any, cond_neg: Any, pose_image_tensor: torch.Tensor, vae: Any) -> tuple[Any, Any]:
         """Returns placeholder conditionals."""
 
-        print("Loading ControlNet...")
+        logging.info("Loading ControlNet...")
         controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self.controlnet_path)
         controlnet = comfy.controlnet.load_controlnet(controlnet_full_path)
 
@@ -231,7 +232,7 @@ class OpenPosePose:
         self._scale_stick_for_xinsr_cn = scale_stick_for_xinsr_cn
         self._resolution = resolution
 
-        print("Loading OpenPose Image...")
+        logging.info("Loading OpenPose Image...")
         input_folder = folder_paths.get_input_directory()
         image_path = os.path.join(input_folder, image_name)
         img = node_helpers.pillow(Image.open, image_path)
