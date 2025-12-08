@@ -63,6 +63,7 @@ class JSONTreeEditor(ttk.Frame):
         self.text_entries: dict[str, tk.Text] = {}  # For multiline text widgets
         self.boolean_vars: dict[str, tk.BooleanVar] = {}
         self.list_entries: dict[str, list[dict[str, Any]]] = {}
+        self.file_entries: dict[str, ttk.Combobox] = {}
 
         # Create canvas with scrollbar
         self.canvas = tk.Canvas(self, highlightthickness=0)
@@ -101,6 +102,7 @@ class JSONTreeEditor(ttk.Frame):
         self.text_entries.clear()
         self.boolean_vars.clear()
         self.list_entries.clear()
+        self.file_entries.clear()
 
         # Clear existing widgets
         for widget in self.scrollable_frame.winfo_children():
@@ -115,89 +117,115 @@ class JSONTreeEditor(ttk.Frame):
     ) -> None:
         """Recursively build the tree view."""
         # List of keys that should use multiline text boxes
+        try:
+            for key, value in data.items():
+                assert key in body, f"'{key}' key not found in body"
+                assert isinstance(body[key], dict), f"Body for key '{key}' must be a dict"
+                assert "type" in body[key], f"'type' not specified for key '{key}' in body"
+                body_type: str = body[key]["type"]
+                assert "isArray" in body[key], f"'isArray' not specified for key '{key}' in body"
+                body_is_array: bool = body[key]["isArray"]
+                full_key = f"{prefix}.{key}" if prefix else key
+                frame = ttk.Frame(parent)
+                frame.pack(fill="x", padx=(indent * 20, 5), pady=2)
 
-        for key, value in data.items():
-            assert key in body, f"'{key}' key not found in body"
-            assert isinstance(body[key], dict), f"Body for key '{key}' must be a dict"
-            assert "type" in body[key], f"'type' not specified for key '{key}' in body"
-            body_type: str = body[key]["type"]
-            assert "isArray" in body[key], f"'isArray' not specified for key '{key}' in body"
-            body_is_array: bool = body[key]["isArray"]
-            full_key = f"{prefix}.{key}" if prefix else key
-            frame = ttk.Frame(parent)
-            frame.pack(fill="x", padx=(indent * 20, 5), pady=2)
-
-            if body_is_array:
-                assert isinstance(value, list), f"Value for key '{key}' must be a list"
-                body[key]["isArray"] = False  # Temporarily set to False to process items
-                label = ttk.Label(frame, text=f"▼ {key} (Array):", font=("TkDefaultFont", 10, "bold"))
-                label.pack(anchor="w")
-                for i, item in enumerate(value):
-                    item_key = f"{full_key}[{i}]"
-                    item_frame = ttk.Frame(parent)
-                    item_frame.pack(fill="x", padx=((indent + 1) * 20, 5), pady=2)
-                    item_label = ttk.Label(item_frame, text=f"{key} [{i}]:", font=("TkDefaultFont", 10, "bold"))
-                    item_label.pack(anchor="w")
-                    if body_type == "object":
-                        assert isinstance(item, dict), f"List item '{key}' must be a dict"
-                        assert "props" in body[key], f"'props' not specified for key '{key}' in body"
-                        self._build_tree(parent, item, body[key]["props"], item_key, indent + 2)
-                    else:
-                        # Primitive types in list
-                        self._build_tree(parent, {f"{key}_{i}": item}, {f"{key}_{i}": body[key]}, item_key, indent + 1)
-                body[key]["isArray"] = True  # Restore isArray
-            elif body_type == "object":
-                assert isinstance(value, dict), f"Value for key '{key}' must be a dict"
-                assert "props" in body[key], f"'props' not specified for key '{key}' in body"
-                # Expandable section for dict
-                label = ttk.Label(frame, text=f"▼ {key}:", font=("TkDefaultFont", 10, "bold"))
-                label.pack(anchor="w")
-                self._build_tree(parent, value, body[key]["props"], full_key, indent + 1)
-            elif body_type == "bool":
-                assert isinstance(value, bool), f"Value for key '{key}' must be a bool in list item '{key}'"
-                label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-                label.pack(side="left")
-                var = tk.BooleanVar(value=value)
-                check = ttk.Checkbutton(frame, variable=var)
-                check.pack(side="left", padx=5)
-                self.boolean_vars[full_key] = var
-            elif body_type == "multiline_string":
-                assert isinstance(value, str), f"Value for key '{key}' must be a string"
-                # Multiline text box for positive/negative prompts
-                label = ttk.Label(frame, text=f"{key}:", font=("TkDefaultFont", 10, "bold"))
-                label.pack(anchor="w")
-
-                text_frame = ttk.Frame(parent)
-                text_frame.pack(fill="x", padx=(indent * 20 + 10, 5), pady=5)
-
-                text_widget = tk.Text(text_frame, height=8, width=80, wrap="word")
-                text_scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
-                text_widget.configure(yscrollcommand=text_scrollbar.set)
-
-                text_widget.insert("1.0", str(value))
-
-                text_widget.pack(side="left", fill="both", expand=True)
-                text_scrollbar.pack(side="right", fill="y")
-
-                self.text_entries[full_key] = text_widget
-
-            elif body_type == "string" or body_type == "float" or body_type == "int":
-                label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-                label.pack(side="left")
-                entry = ttk.Entry(frame, width=60)
-                entry.insert(0, str(value))
-                entry.pack(side="left", padx=5, fill="x", expand=True)
-                if body_type == "string":
+                if body_is_array:
+                    assert isinstance(value, list), f"Value for key '{key}' must be a list"
+                    body[key]["isArray"] = False  # Temporarily set to False to process items
+                    label = ttk.Label(frame, text=f"▼ {key} (Array):", font=("TkDefaultFont", 10, "bold"))
+                    label.pack(anchor="w")
+                    for i, item in enumerate(value):
+                        item_key = f"{full_key}[{i}]"
+                        item_frame = ttk.Frame(parent)
+                        item_frame.pack(fill="x", padx=((indent + 1) * 20, 5), pady=2)
+                        item_label = ttk.Label(item_frame, text=f"{key} [{i}]:", font=("TkDefaultFont", 10, "bold"))
+                        item_label.pack(anchor="w")
+                        if body_type == "object":
+                            assert isinstance(item, dict), f"List item '{key}' must be a dict"
+                            assert "props" in body[key], f"'props' not specified for key '{key}' in body"
+                            self._build_tree(parent, item, body[key]["props"], item_key, indent + 2)
+                        else:
+                            # Primitive types in list
+                            self._build_tree(
+                                parent, {f"{key}_{i}": item}, {f"{key}_{i}": body[key]}, item_key, indent + 1
+                            )
+                    body[key]["isArray"] = True  # Restore isArray
+                elif body_type == "object":
+                    assert isinstance(value, dict), f"Value for key '{key}' must be a dict"
+                    assert "props" in body[key], f"'props' not specified for key '{key}' in body"
+                    # Expandable section for dict
+                    label = ttk.Label(frame, text=f"▼ {key}:", font=("TkDefaultFont", 10, "bold"))
+                    label.pack(anchor="w")
+                    self._build_tree(parent, value, body[key]["props"], full_key, indent + 1)
+                elif body_type == "bool":
+                    assert isinstance(value, bool), f"Value for key '{key}' must be a bool in list item '{key}'"
+                    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+                    label.pack(side="left")
+                    var = tk.BooleanVar(value=value)
+                    check = ttk.Checkbutton(frame, variable=var)
+                    check.pack(side="left", padx=5)
+                    self.boolean_vars[full_key] = var
+                elif body_type == "multiline_string":
                     assert isinstance(value, str), f"Value for key '{key}' must be a string"
-                    self.string_entries[full_key] = entry
-                elif body_type == "int":
-                    assert isinstance(value, int), f"Value for key '{key}' must be an int"
-                    self.int_entries[full_key] = entry
-                elif body_type == "float":
-                    assert isinstance(value, float), f"Value for key '{key}' must be a float"
-                    self.float_entries[full_key] = entry
+                    # Multiline text box for positive/negative prompts
+                    label = ttk.Label(frame, text=f"{key}:", font=("TkDefaultFont", 10, "bold"))
+                    label.pack(anchor="w")
+
+                    text_frame = ttk.Frame(parent)
+                    text_frame.pack(fill="x", padx=(indent * 20 + 10, 5), pady=5)
+
+                    text_widget = tk.Text(text_frame, height=8, width=80, wrap="word")
+                    text_scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
+                    text_widget.configure(yscrollcommand=text_scrollbar.set)
+
+                    text_widget.insert("1.0", str(value))
+
+                    text_widget.pack(side="left", fill="both", expand=True)
+                    text_scrollbar.pack(side="right", fill="y")
+
+                    self.text_entries[full_key] = text_widget
+
+                elif body_type == "string" or body_type == "float" or body_type == "int":
+                    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+                    label.pack(side="left")
+                    entry = ttk.Entry(frame, width=60)
+                    entry.insert(0, str(value))
+                    entry.pack(side="left", padx=5, fill="x", expand=True)
+                    if body_type == "string":
+                        assert isinstance(value, str), f"Value for key '{key}' must be a string"
+                        self.string_entries[full_key] = entry
+                    elif body_type == "int":
+                        assert isinstance(value, int), f"Value for key '{key}' must be an int"
+                        self.int_entries[full_key] = entry
+                    elif body_type == "float":
+                        assert isinstance(value, float), f"Value for key '{key}' must be a float"
+                        self.float_entries[full_key] = entry
+                    else:
+                        raise ValueError(f"Unsupported body type: {body_type}")
+                elif body_type == "file":
+                    assert isinstance(value, str), f"Value for key '{key}' must be a string"
+                    assert "parent" in body[key], f"'parent' not specified for file type key '{key}' in body"
+                    body_parent = body[key]["parent"]
+                    assert isinstance(body_parent, str), f"'parent' for file type key '{key}' must be a string"
+                    files: list[str] = []
+                    if body_parent == "input":
+                        files = gui_utils.get_input_files_recursive()
+                    else:
+                        files = gui_utils.get_folder_files_recursive(body_parent)
+                    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+                    label.pack(side="left")
+                    combo = ttk.Combobox(frame, width=57, state="readonly")
+                    combo["values"] = files
+                    if value in files:
+                        combo.set(value)
+                    combo.pack(side="left", padx=5, fill="x", expand=True)
+                    self.file_entries[full_key] = combo
                 else:
                     raise ValueError(f"Unsupported body type: {body_type}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Error building JSON tree at prefix '{prefix}':\n{e}")
+            logging.exception("Error building JSON tree at prefix '%s': %s", prefix, e)
+            raise e
 
     def get_data(self) -> dict[str, Any]:
         """Get the current data from the editor."""
@@ -223,6 +251,10 @@ class JSONTreeEditor(ttk.Frame):
         # Update boolean entries
         for full_key, var in self.boolean_vars.items():
             self._set_nested_value(result, full_key, var.get())
+            
+        # Update file entries
+        for full_key, combo in self.file_entries.items():
+            self._set_nested_value(result, full_key, combo.get())
 
         return result
 
