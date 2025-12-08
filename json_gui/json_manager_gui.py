@@ -1,9 +1,13 @@
 """GUI Application for managing JSON configuration files."""
 
+import importlib
+import inspect
 import json
 import os
 import logging
-from typing import Any
+from pathlib import Path
+import threading
+from typing import Any, Callable, Optional, cast
 import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
@@ -11,7 +15,6 @@ from PIL import Image, ImageTk
 import torch
 from app.logger import setup_logger
 import json_gui.json_manager_starter as json_manager_starter
-from json_gui.script_controlnet import main as run_controlnet
 from comfy.cli_args import args
 
 logger = logging.getLogger()
@@ -19,6 +22,32 @@ if logger.hasHandlers():
     logger.handlers.clear()
 
 setup_logger(log_level=args.verbose, use_stdout=args.log_stdout)
+
+
+def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
+    """Show a modal loading window."""
+    loading_win = tk.Toplevel(parent)
+    loading_win.title("")
+    loading_win.geometry("250x80")
+    loading_win.transient(parent)
+    loading_win.grab_set()  # Hace la ventana modal
+    loading_win.resizable(False, False)
+    loading_win.protocol("WM_DELETE_WINDOW", lambda: None)  # Deshabilita cerrar
+
+    # Frame for text and scrollbar
+    frame = ttk.Frame(loading_win)
+    frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+    text_widget = tk.Text(frame, height=3, wrap="word")
+    text_widget.insert("1.0", message)
+    text_widget.config(state="disabled")
+    text_widget.pack(side="left", fill="both", expand=True)
+
+    # Horizontal scrollbar
+    x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
+    text_widget.configure(xscrollcommand=x_scroll.set)
+    x_scroll.pack(side="bottom", fill="x")
+    return loading_win
 
 
 class JSONTreeEditor(ttk.Frame):
@@ -310,7 +339,34 @@ class ImageViewer(ttk.Frame):
 class JSONManagerApp:
     """Main application class."""
 
+    @property
+    def flow(self) -> Optional[Callable[[str, str, int], list[str]]]:
+        """Get the flow callable."""
+        return self._flow
+
+    @flow.setter
+    def flow(self, value: Optional[Callable[[str, str, int], list[str]]]) -> None:
+        """Set the flow callable and validate its signature."""
+        if value is None:
+            self._flow = None
+            return
+        # Validate that value is a Callable
+        assert callable(value), "flow must be a callable"
+        # Validate the signature main(path_file: str, filename: str, steps: int) -> list[str]
+        signature = inspect.signature(value)
+        params = list(signature.parameters.keys())
+        assert params == ["path_file", "filename", "steps"], f"Invalid parameters: {params}"
+        assert signature.return_annotation == list[str], "Invalid return type"
+
+        self._flow = value
+
+    @flow.deleter
+    def flow(self) -> None:
+        """Delete the flow callable."""
+        self._flow = None
+
     def __init__(self, root: tk.Tk):
+        self._flow = None
         self.root = root
         self.root.title("JSON Configuration Manager")
 
@@ -326,7 +382,7 @@ class JSONManagerApp:
         self.current_file: str | None = None
 
         self._setup_ui()
-        self._refresh_file_list()
+        self._refresh_folder_list()
 
     def _setup_ui(self) -> None:
         """Setup the user interface."""
@@ -338,6 +394,15 @@ class JSONManagerApp:
         controls_frame = ttk.Frame(main_frame)
         controls_frame.pack(fill="x", pady=(0, 10))
 
+        # Flow selector
+        ttk.Label(controls_frame, text="Flow Folder:").pack(side="left", padx=(0, 5))
+        self.folder_var = tk.StringVar()
+        self.folder_combo = ttk.Combobox(controls_frame, textvariable=self.folder_var, width=50, state="readonly")
+        self.folder_combo.pack(side="left", padx=(0, 10))
+        self.folder_combo.bind("<<ComboboxSelected>>", self._on_folder_selected)
+
+        ttk.Button(controls_frame, text="Refresh Flows", command=self._refresh_folder_list).pack(side="left", padx=5)
+
         # File selector
         ttk.Label(controls_frame, text="JSON File:").pack(side="left", padx=(0, 5))
         self.file_var = tk.StringVar()
@@ -345,7 +410,7 @@ class JSONManagerApp:
         self.file_combo.pack(side="left", padx=(0, 10))
         self.file_combo.bind("<<ComboboxSelected>>", self._on_file_selected)
 
-        ttk.Button(controls_frame, text="Refresh", command=self._refresh_file_list).pack(side="left", padx=5)
+        ttk.Button(controls_frame, text="Refresh JSONs", command=self._refresh_file_list).pack(side="left", padx=5)
 
         # Steps input
         ttk.Label(controls_frame, text="Steps:").pack(side="left", padx=(20, 5))
@@ -379,23 +444,94 @@ class JSONManagerApp:
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief="sunken", anchor="w")
         status_bar.pack(fill="x", pady=(10, 0))
 
+    def _refresh_folder_list(self) -> None:
+        """Refresh the list of Flow folders."""
+        try:
+            folders = [
+                f
+                for f in os.listdir(json_manager_starter.get_main_images_path())
+                if os.path.isdir(os.path.join(json_manager_starter.get_main_images_path(), f))
+            ]
+            folders.sort()
+            self.folder_combo["values"] = folders
+            self.status_var.set(f"Found {len(folders)} Flow folders")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read directory: {e}")
+
     def _refresh_file_list(self) -> None:
         """Refresh the list of JSON files."""
+        foldername = self.folder_var.get()
+        assert foldername, "Folder name is empty"
         try:
-            files = [f for f in os.listdir(json_manager_starter.get_main_images_path()) if f.endswith(".json")]
+            look_path = os.path.join(json_manager_starter.get_main_images_path(), foldername)
+            files = [f for f in os.listdir(look_path) if f.endswith(".json")]
             files.sort()
             self.file_combo["values"] = files
             self.status_var.set(f"Found {len(files)} JSON files")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read directory: {e}")
 
+    def _on_folder_selected(self, event: tk.Event | None = None) -> None:
+        """Handle file selection."""
+        foldername = self.folder_var.get()
+        if not foldername:
+            return
+
+        filepath = os.path.join(json_manager_starter.get_main_images_path(), foldername)
+        try:
+            # validate that foldername is a directory
+            assert os.path.isdir(filepath), f"{foldername} is not a valid directory"
+            del self.flow
+
+            def load_script(loading_win: tk.Toplevel = None) -> None:
+                """Load the script for the selected folder and set the flow function."""
+                try:
+                    # verify that the script has a main function
+                    script_path = json_manager_starter.get_main_script_path(foldername)
+                    module_path = Path(script_path)
+                    spec = importlib.util.spec_from_file_location(module_path.stem, script_path)
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    assert hasattr(module, "main"), f"Script {script_path} does not have a main function"
+                    self.flow = getattr(module, "main")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to load script:\n{e}")
+                    logging.exception("Failed to load script for folder %s", foldername)
+                    raise e
+                finally:
+                    if loading_win:
+                        loading_win.destroy()
+
+            loading_win = _show_loading_modal(self.root, message=f"Loading Flow: {foldername}...")
+            t = threading.Thread(target=load_script, args=(loading_win,))
+            t.start()
+            while t.is_alive():
+                self.root.after(100, self.root.update())
+            assert self.flow is not None, "Flow function is not set after loading script"
+            self.folder_var.set(foldername)
+
+            # Clear previous data
+            self.json_editor.load_data({})
+            self.current_file = None
+            self.status_var.set(f"Selected folder: {foldername}")
+            self.image_viewer.clear()
+            self._refresh_file_list()
+        except ModuleNotFoundError:
+            messagebox.showerror("Error", f"Script not found for folder: {foldername}")
+            logging.exception("Script not found for folder %s", foldername)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load file: {foldername},\n{e}")
+            logging.exception("Failed to load folder %s", foldername)
+
     def _on_file_selected(self, event: tk.Event | None = None) -> None:
         """Handle file selection."""
+        foldername = self.folder_var.get()
+        assert foldername, "Folder name is empty"
         filename = self.file_var.get()
         if not filename:
             return
 
-        filepath = os.path.join(json_manager_starter.get_main_images_path(), filename)
+        filepath = os.path.join(json_manager_starter.get_main_images_path(), foldername, filename)
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -442,8 +578,9 @@ class JSONManagerApp:
                     messagebox.showerror("Error", "Spaces are not allowed in filename")
                     return
                 new_filename = filename if filename.endswith(".json") else f"{filename}.json"
-
-            new_filepath = os.path.join(json_manager_starter.get_main_images_path(), new_filename)
+            foldername = self.folder_var.get()
+            assert foldername, "Folder name is empty"
+            new_filepath = os.path.join(json_manager_starter.get_main_images_path(), foldername, new_filename)
 
             with open(new_filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -470,30 +607,55 @@ class JSONManagerApp:
 
         # Get filename without extension
         filename = os.path.basename(self.current_file)
+        foldername = self.folder_var.get()
+        try:
+            assert foldername, "Folder name is empty"
+            assert foldername in self.current_file, "Folder name must be part of the current file path"
+        except AssertionError as e:
+            messagebox.showerror("Error", f"Failed to execute:\n{e}")
+            logging.exception("Execution failed")
+            raise e
+
         filename_without_ext = os.path.splitext(filename)[0]
 
         self.status_var.set(f"Executing with {filename_without_ext}...")
         self.root.update()
 
-        try:
-            # Import and run the main function
+        def run_flow(loading_win: tk.Toplevel) -> None:
+            """Run the flow function in a separate thread."""
+            try:
+                assert self.flow is not None, "Flow function is not set"
+                # Import and run the main function
+                assert self.flow is not None, "Flow function is not set"
+                assert callable(self.flow), "Flow is not callable"
+                flow_fn = cast(Callable[[str, str, int], list[str]], self.flow)
 
-            with torch.inference_mode():
-                image_paths = run_controlnet(json_manager_starter.get_main_images_path(), filename_without_ext, steps)
+                with torch.inference_mode():
+                    image_paths = flow_fn(
+                        os.path.join(json_manager_starter.get_main_images_path(), foldername),
+                        filename_without_ext,
+                        steps,
+                    )
 
-            if image_paths:
-                self.image_viewer.display_images(image_paths)
-                self.status_var.set(f"Execution complete. Generated {len(image_paths)} images.")
-            else:
-                self.status_var.set("Execution complete. No images generated.")
-                messagebox.showinfo("Info", "Execution completed but no images were generated.")
+                if image_paths:
+                    self.image_viewer.display_images(image_paths)
+                    self.status_var.set(f"Execution complete. Generated {len(image_paths)} images.")
+                else:
+                    self.status_var.set("Execution complete. No images generated.")
+                    messagebox.showinfo("Info", "Execution completed but no images were generated.")
 
-        except Exception as e:
-            self.status_var.set("Execution failed")
-            messagebox.showerror("Execution Error", f"Failed to execute:\n{e}")
-            # log exception stack trace
-            logging.exception("Execution failed")
-            raise e
+            except Exception as e:
+                self.status_var.set("Execution failed")
+                messagebox.showerror("Execution Error", f"Failed to execute:\n{e}")
+                # log exception stack trace
+                logging.exception("Execution failed")
+                raise e
+            finally:
+                if loading_win:
+                    loading_win.destroy()
+
+        loading_win = _show_loading_modal(self.root, message=f"Executing Flow {foldername}: {filename_without_ext}...")
+        threading.Thread(target=run_flow, args=(loading_win,)).start()
 
 
 def main() -> None:

@@ -79,3 +79,15 @@ def get_main_images_path() -> str:
     if not os.path.exists(ret_path):
         os.makedirs(ret_path)
     return ret_path
+
+
+def get_main_script_path(script_name: str) -> str:
+    """Returns the path to an specific script."""
+    script_dir = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)),
+        "scripts",
+        f"{script_name}.py"
+    )
+    # Verify that the script exists and is a file
+    assert os.path.isfile(script_dir), f"Script {script_name} does not exist."
+    return script_dir
