@@ -1,0 +1,158 @@
+props:
+  positive:
+    type: multiline_string
+    isArray: false
+  negative:
+    type: multiline_string
+    isArray: false
+  openpose_pose:
+    type: object
+    isArray: false
+    props:
+      image_name:
+        type: file
+        isArray: false
+        parent: input
+      detect_hands:
+        type: bool
+        isArray: false
+      detect_body:
+        type: bool
+        isArray: false
+      detect_face:
+        type: bool
+        isArray: false
+      resolution:
+        type: int
+        isArray: false
+      scale_stick_for_xinsr_cn:
+        type: bool
+        isArray: false
+  apply_control_net:
+    type: object
+    isArray: false
+    props:
+      controlnet_path:
+        type: file
+        isArray: false
+        parent: controlnet
+      strength:
+        type: float
+        isArray: false
+      start_percentage:
+        type: float
+        isArray: false
+      end_percentage:
+        type: float
+        isArray: false
+  empty_latent:
+    type: object
+    isArray: false
+    props:
+      width:
+        type: int
+        isArray: false
+      height:
+        type: int
+        isArray: false
+      batch_size:
+        type: int
+        isArray: false
+  simple_k_sampler:
+    type: object
+    isArray: true
+    props:
+      seed:
+        type: int
+        isArray: false
+      steps:
+        type: int
+        isArray: false
+      cfg:
+        type: float
+        isArray: false
+      sampler_name:
+        type: string
+        isArray: false
+      scheduler:
+        type: string
+        isArray: false
+      denoise:
+        type: float
+        isArray: false
+  face_detailer:
+    type: object
+    isArray: false
+    props:
+      seed:
+        type: int
+        isArray: false
+      steps:
+        type: int
+        isArray: false
+      cfg:
+        type: float
+        isArray: false
+      sampler_name:
+        type: string
+        isArray: false
+      scheduler:
+        type: string
+        isArray: false
+      denoise:
+        type: float
+        isArray: false
+      guide_size:
+        type: int
+        isArray: false
+      guide_size_for:
+        type: bool
+        isArray: false
+      max_size:
+        type: int
+        isArray: false
+      feather:
+        type: int
+        isArray: false
+      noise_mask:
+        type: bool
+        isArray: false
+      force_inpaint:
+        type: bool
+        isArray: false
+      drop_size:
+        type: int
+        isArray: false
+      cycle:
+        type: int
+        isArray: false
+      bbox_threshold:
+        type: float
+        isArray: false
+      bbox_dilation:
+        type: int
+        isArray: false
+      bbox_crop_factor:
+        type: float
+        isArray: false
+      sam_detection_hint:
+        type: string
+        isArray: false
+      sam_dilation:
+        type: int
+        isArray: false
+      sam_threshold:
+        type: float
+        isArray: false
+      sam_bbox_expansion:
+        type: int
+        isArray: false
+      sam_mask_hint_threshold:
+        type: float
+        isArray: false
+      sam_mask_hint_use_negative:
+        type: string
+        isArray: false
+      wildcard:
+        type: string
+        isArray: false

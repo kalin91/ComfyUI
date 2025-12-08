@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import logging
+import yaml
 from pathlib import Path
 import threading
 from typing import Any, Callable, Optional, cast
@@ -56,7 +57,9 @@ class JSONTreeEditor(ttk.Frame):
     def __init__(self, parent: tk.Widget):
         super().__init__(parent)
         self.data: dict[str, Any] = {}
-        self.entries: dict[str, tk.Entry] = {}
+        self.string_entries: dict[str, tk.Entry] = {}
+        self.int_entries: dict[str, tk.Entry] = {}
+        self.float_entries: dict[str, tk.Entry] = {}
         self.text_entries: dict[str, tk.Text] = {}  # For multiline text widgets
         self.boolean_vars: dict[str, tk.BooleanVar] = {}
         self.list_entries: dict[str, list[dict[str, Any]]] = {}
@@ -89,10 +92,12 @@ class JSONTreeEditor(ttk.Frame):
         else:
             self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    def load_data(self, data: dict[str, Any]) -> None:
+    def load_data(self, data: dict[str, Any], body: dict[str, Any]) -> None:
         """Load JSON data into the editor."""
         self.data = data
-        self.entries.clear()
+        self.string_entries.clear()
+        self.int_entries.clear()
+        self.float_entries.clear()
         self.text_entries.clear()
         self.boolean_vars.clear()
         self.list_entries.clear()
@@ -101,73 +106,63 @@ class JSONTreeEditor(ttk.Frame):
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
 
-        self._build_tree(self.scrollable_frame, data, "")
+        assert "props" in body, "'props' key not found in body"
 
-    def _build_tree(self, parent: tk.Widget, data: dict[str, Any], prefix: str, indent: int = 0) -> None:
+        self._build_tree(self.scrollable_frame, data, body["props"], "")
+
+    def _build_tree(
+        self, parent: tk.Widget, data: dict[str, Any], body: dict[str, Any], prefix: str, indent: int = 0
+    ) -> None:
         """Recursively build the tree view."""
         # List of keys that should use multiline text boxes
-        multiline_keys = {"positive", "negative"}
 
         for key, value in data.items():
+            assert key in body, f"'{key}' key not found in body"
+            assert isinstance(body[key], dict), f"Body for key '{key}' must be a dict"
+            assert "type" in body[key], f"'type' not specified for key '{key}' in body"
+            body_type: str = body[key]["type"]
+            assert "isArray" in body[key], f"'isArray' not specified for key '{key}' in body"
+            body_is_array: bool = body[key]["isArray"]
             full_key = f"{prefix}.{key}" if prefix else key
             frame = ttk.Frame(parent)
             frame.pack(fill="x", padx=(indent * 20, 5), pady=2)
 
-            if isinstance(value, dict):
+            if body_is_array:
+                assert isinstance(value, list), f"Value for key '{key}' must be a list"
+                body[key]["isArray"] = False  # Temporarily set to False to process items
+                label = ttk.Label(frame, text=f"▼ {key} (Array):", font=("TkDefaultFont", 10, "bold"))
+                label.pack(anchor="w")
+                for i, item in enumerate(value):
+                    item_key = f"{full_key}[{i}]"
+                    item_frame = ttk.Frame(parent)
+                    item_frame.pack(fill="x", padx=((indent + 1) * 20, 5), pady=2)
+                    item_label = ttk.Label(item_frame, text=f"{key} [{i}]:", font=("TkDefaultFont", 10, "bold"))
+                    item_label.pack(anchor="w")
+                    if body_type == "object":
+                        assert isinstance(item, dict), f"List item '{key}' must be a dict"
+                        assert "props" in body[key], f"'props' not specified for key '{key}' in body"
+                        self._build_tree(parent, item, body[key]["props"], item_key, indent + 2)
+                    else:
+                        # Primitive types in list
+                        self._build_tree(parent, {f"{key}_{i}": item}, {f"{key}_{i}": body[key]}, item_key, indent + 1)
+                body[key]["isArray"] = True  # Restore isArray
+            elif body_type == "object":
+                assert isinstance(value, dict), f"Value for key '{key}' must be a dict"
+                assert "props" in body[key], f"'props' not specified for key '{key}' in body"
                 # Expandable section for dict
                 label = ttk.Label(frame, text=f"▼ {key}:", font=("TkDefaultFont", 10, "bold"))
                 label.pack(anchor="w")
-                self._build_tree(parent, value, full_key, indent + 1)
-
-            elif isinstance(value, list):
-                # List of items
-                label = ttk.Label(
-                    frame, text=f"▼ {key}: (list with {len(value)} items)", font=("TkDefaultFont", 10, "bold")
-                )
-                label.pack(anchor="w")
-                self.list_entries[full_key] = []
-
-                for i, item in enumerate(value):
-                    item_key = f"{full_key}[{i}]"
-                    if isinstance(item, dict):
-                        item_frame = ttk.LabelFrame(parent, text=f"{key}[{i}]")
-                        item_frame.pack(fill="x", padx=((indent + 1) * 20, 5), pady=5)
-                        item_entries: dict[str, Any] = {}
-                        for sub_key, sub_value in item.items():
-                            sub_frame = ttk.Frame(item_frame)
-                            sub_frame.pack(fill="x", padx=5, pady=2)
-                            sub_label = ttk.Label(sub_frame, text=f"{sub_key}:", width=25, anchor="e")
-                            sub_label.pack(side="left")
-
-                            if isinstance(sub_value, bool):
-                                var = tk.BooleanVar(value=sub_value)
-                                check = ttk.Checkbutton(sub_frame, variable=var)
-                                check.pack(side="left", padx=5)
-                                item_entries[sub_key] = var
-                            else:
-                                entry = ttk.Entry(sub_frame, width=40)
-                                entry.insert(0, str(sub_value))
-                                entry.pack(side="left", padx=5, fill="x", expand=True)
-                                item_entries[sub_key] = entry
-                        self.list_entries[full_key].append(item_entries)
-                    else:
-                        item_frame = ttk.Frame(parent)
-                        item_frame.pack(fill="x", padx=((indent + 1) * 20, 5), pady=2)
-                        label = ttk.Label(item_frame, text=f"[{i}]:", width=25, anchor="e")
-                        label.pack(side="left")
-
-                        if isinstance(item, bool):
-                            var = tk.BooleanVar(value=item)
-                            check = ttk.Checkbutton(item_frame, variable=var)
-                            check.pack(side="left", padx=5)
-                            self.list_entries[full_key].append({"_value": var})
-                        else:
-                            entry = ttk.Entry(item_frame, width=40)
-                            entry.insert(0, str(item))
-                            entry.pack(side="left", padx=5, fill="x", expand=True)
-                            self.list_entries[full_key].append({"_value": entry})
-
-            elif key in multiline_keys:
+                self._build_tree(parent, value, body[key]["props"], full_key, indent + 1)
+            elif body_type == "bool":
+                assert isinstance(value, bool), f"Value for key '{key}' must be a bool in list item '{key}'"
+                label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+                label.pack(side="left")
+                var = tk.BooleanVar(value=value)
+                check = ttk.Checkbutton(frame, variable=var)
+                check.pack(side="left", padx=5)
+                self.boolean_vars[full_key] = var
+            elif body_type == "multiline_string":
+                assert isinstance(value, str), f"Value for key '{key}' must be a string"
                 # Multiline text box for positive/negative prompts
                 label = ttk.Label(frame, text=f"{key}:", font=("TkDefaultFont", 10, "bold"))
                 label.pack(anchor="w")
@@ -186,28 +181,38 @@ class JSONTreeEditor(ttk.Frame):
 
                 self.text_entries[full_key] = text_widget
 
-            else:
-                # Simple key-value
+            elif body_type == "string" or body_type == "float" or body_type == "int":
                 label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
                 label.pack(side="left")
-
-                if isinstance(value, bool):
-                    var = tk.BooleanVar(value=value)
-                    check = ttk.Checkbutton(frame, variable=var)
-                    check.pack(side="left", padx=5)
-                    self.boolean_vars[full_key] = var
+                entry = ttk.Entry(frame, width=60)
+                entry.insert(0, str(value))
+                entry.pack(side="left", padx=5, fill="x", expand=True)
+                if body_type == "string":
+                    assert isinstance(value, str), f"Value for key '{key}' must be a string"
+                    self.string_entries[full_key] = entry
+                elif body_type == "int":
+                    assert isinstance(value, int), f"Value for key '{key}' must be an int"
+                    self.int_entries[full_key] = entry
+                elif body_type == "float":
+                    assert isinstance(value, float), f"Value for key '{key}' must be a float"
+                    self.float_entries[full_key] = entry
                 else:
-                    entry = ttk.Entry(frame, width=60)
-                    entry.insert(0, str(value))
-                    entry.pack(side="left", padx=5, fill="x", expand=True)
-                    self.entries[full_key] = entry
+                    raise ValueError(f"Unsupported body type: {body_type}")
 
     def get_data(self) -> dict[str, Any]:
         """Get the current data from the editor."""
         result = self._deep_copy_structure(self.data)
 
-        # Update simple entries
-        for full_key, entry in self.entries.items():
+        # Update string entries
+        for full_key, entry in self.string_entries.items():
+            self._set_nested_value(result, full_key, self._parse_value(entry.get()))
+
+        # Update int entries
+        for full_key, entry in self.int_entries.items():
+            self._set_nested_value(result, full_key, self._parse_value(entry.get()))
+
+        # Update float entries
+        for full_key, entry in self.float_entries.items():
             self._set_nested_value(result, full_key, self._parse_value(entry.get()))
 
         # Update multiline text entries
@@ -218,26 +223,6 @@ class JSONTreeEditor(ttk.Frame):
         # Update boolean entries
         for full_key, var in self.boolean_vars.items():
             self._set_nested_value(result, full_key, var.get())
-
-        # Update list entries
-        for full_key, items in self.list_entries.items():
-            new_list = []
-            for item_entries in items:
-                if "_value" in item_entries:
-                    widget = item_entries["_value"]
-                    if isinstance(widget, tk.BooleanVar):
-                        new_list.append(widget.get())
-                    else:
-                        new_list.append(self._parse_value(widget.get()))
-                else:
-                    new_item = {}
-                    for sub_key, widget in item_entries.items():
-                        if isinstance(widget, tk.BooleanVar):
-                            new_item[sub_key] = widget.get()
-                        else:
-                            new_item[sub_key] = self._parse_value(widget.get())
-                    new_list.append(new_item)
-            self._set_nested_value(result, full_key, new_list)
 
         return result
 
@@ -365,6 +350,35 @@ class JSONManagerApp:
         """Delete the flow callable."""
         self._flow = None
 
+    @property
+    def flow_body(self) -> Optional[dict[str, Any]]:
+        """Get the flow body from the current JSON data."""
+        return self._flow_body
+
+    @flow_body.setter
+    def flow_body(self, filename: str) -> None:
+        """Set the flow body."""
+        if filename is None:
+            self._flow_body = None
+            return
+
+        assert os.path.isfile(filename), f"{filename} is not a valid file"
+        # Load YAML file
+        with open(filename, "r", encoding="utf-8") as f:
+            value: dict[str, Any] = yaml.safe_load(f)
+
+        # Validate
+        assert value is not None, "flow_body cannot be None"
+        assert isinstance(value, dict), "flow_body must be a dictionary"
+        assert "props" in value, "flow_body must contain 'props' key"
+
+        self._flow_body = value
+
+    @flow_body.deleter
+    def flow_body(self) -> None:
+        """Delete the flow body."""
+        self._flow_body = None
+
     def __init__(self, root: tk.Tk):
         self._flow = None
         self.root = root
@@ -482,12 +496,12 @@ class JSONManagerApp:
             # validate that foldername is a directory
             assert os.path.isdir(filepath), f"{foldername} is not a valid directory"
             del self.flow
+            script_path = json_manager_starter.get_main_script_path(foldername)
 
             def load_script(loading_win: tk.Toplevel = None) -> None:
                 """Load the script for the selected folder and set the flow function."""
                 try:
                     # verify that the script has a main function
-                    script_path = json_manager_starter.get_main_script_path(foldername)
                     module_path = Path(script_path)
                     spec = importlib.util.spec_from_file_location(module_path.stem, script_path)
                     module = importlib.util.module_from_spec(spec)
@@ -510,8 +524,12 @@ class JSONManagerApp:
             assert self.flow is not None, "Flow function is not set after loading script"
             self.folder_var.set(foldername)
 
+            # Set flow body
+            flow_yaml_path = script_path.replace(".py", ".yml")
+            self.flow_body = flow_yaml_path
+
             # Clear previous data
-            self.json_editor.load_data({})
+            self.json_editor.load_data({}, {"props": {}})
             self.current_file = None
             self.status_var.set(f"Selected folder: {foldername}")
             self.image_viewer.clear()
@@ -527,22 +545,29 @@ class JSONManagerApp:
         """Handle file selection."""
         foldername = self.folder_var.get()
         assert foldername, "Folder name is empty"
+        flow_body = self.flow_body
+        assert flow_body is not None, "Flow body is not set"
         filename = self.file_var.get()
         if not filename:
             return
+
+        body = self.flow_body
+        assert body is not None, "Flow body is not set"
 
         filepath = os.path.join(json_manager_starter.get_main_images_path(), foldername, filename)
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self.json_editor.load_data(data)
+            self.json_editor.load_data(data, body)
             self.current_file = filepath
             self.status_var.set(f"Loaded: {filename}")
             self.image_viewer.clear()
         except json.JSONDecodeError as e:
             messagebox.showerror("JSON Error", f"Failed to parse JSON:\n{e}")
+            logging.exception("Failed to parse JSON file %s", filepath)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load file:\n{e}")
+            logging.exception("Failed to load file %s", filepath)
 
     def _save_file(self) -> None:
         """Save changes to the current file."""
