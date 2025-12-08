@@ -5,13 +5,13 @@ import inspect
 import json
 import os
 import logging
-import yaml
 from pathlib import Path
-import threading
 from typing import Any, Callable, Optional, cast
+import threading
 import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+import yaml
 from PIL import Image, ImageTk
 import torch
 from app.logger import setup_logger
@@ -293,7 +293,7 @@ class ImageViewer(ttk.Frame):
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
 
-        for i, path in enumerate(image_paths):
+        for _i, path in enumerate(image_paths):
             try:
                 img = Image.open(path)
                 # Resize to fit
@@ -313,6 +313,7 @@ class ImageViewer(ttk.Frame):
             except Exception as e:
                 error_label = ttk.Label(self.scrollable_frame, text=f"Error loading {path}: {e}")
                 error_label.pack(side="left", padx=10, pady=10)
+                logging.exception("Error loading image %s", path)
 
     def clear(self) -> None:
         """Clear all images."""
@@ -471,6 +472,7 @@ class JSONManagerApp:
             self.status_var.set(f"Found {len(folders)} Flow folders")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read directory: {e}")
+            logging.exception("Failed to read Flow folders")
 
     def _refresh_file_list(self) -> None:
         """Refresh the list of JSON files."""
@@ -484,8 +486,9 @@ class JSONManagerApp:
             self.status_var.set(f"Found {len(files)} JSON files")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read directory: {e}")
+            logging.exception("Failed to read JSON files in folder %s", foldername)
 
-    def _on_folder_selected(self, event: tk.Event | None = None) -> None:
+    def _on_folder_selected(self, _event: tk.Event | None = None) -> None:
         """Handle file selection."""
         foldername = self.folder_var.get()
         if not foldername:
@@ -541,7 +544,7 @@ class JSONManagerApp:
             messagebox.showerror("Error", f"Failed to load file: {foldername},\n{e}")
             logging.exception("Failed to load folder %s", foldername)
 
-    def _on_file_selected(self, event: tk.Event | None = None) -> None:
+    def _on_file_selected(self, _event: tk.Event | None = None) -> None:
         """Handle file selection."""
         foldername = self.folder_var.get()
         assert foldername, "Folder name is empty"
@@ -583,6 +586,7 @@ class JSONManagerApp:
             messagebox.showinfo("Success", "File saved successfully")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save file:\n{e}")
+            logging.exception("Failed to save file %s", self.current_file)
 
     def _save_as_file(self) -> None:
         """Save as a new file with user provided name or UUID."""
@@ -617,6 +621,7 @@ class JSONManagerApp:
             messagebox.showinfo("Success", f"File saved as:\n{new_filename}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save file:\n{e}")
+            logging.exception("Failed to save file as new file")
 
     def _execute(self) -> None:
         """Execute the main function with the selected JSON."""
