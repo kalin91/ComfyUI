@@ -251,7 +251,7 @@ class JSONTreeEditor(ttk.Frame):
         # Update boolean entries
         for full_key, var in self.boolean_vars.items():
             self._set_nested_value(result, full_key, var.get())
-            
+
         # Update file entries
         for full_key, combo in self.file_entries.items():
             self._set_nested_value(result, full_key, combo.get())

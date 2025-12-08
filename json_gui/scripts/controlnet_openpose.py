@@ -2,10 +2,7 @@
 
 import inspect
 import os
-import importlib
 import logging
-from sys import argv
-import torch
 import numpy as np
 from PIL import Image
 
@@ -35,7 +32,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
     # 1. Load Model and VAE
     logging.info("Loading Checkpoint...")
     ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", CHECKPOINT_PATH)
-    model, _, vae, _ = comfy.sd.load_checkpoint_guess_config(
+    model, _a, vae, _b = comfy.sd.load_checkpoint_guess_config(
         ckpt_path, output_vae=True, output_clip=False, embedding_directory=folder_paths.get_folder_paths("embeddings")
     )
 
@@ -63,7 +60,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
         img_np = 255.0 * pose_image_tensor[0].cpu().numpy()
         img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
         img_pil.save(pose_filename)
-        logging.info(f"Saved pose preview to {pose_filename}")
+        logging.info("Saved pose preview to %s", pose_filename)
         pose_file_saved = True
         created_images.append(pose_filename)
         break
@@ -124,31 +121,33 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
         # 10. Decode
         logging.info("Decoding...")
         images = vae.decode(latent_image.clone())
-        logging.info(f"VAE Output Shape: {images.shape}")
+        logging.info("VAE Output Shape: %s", images.shape)
 
         # Ensure BHWC (Batch, Height, Width, Channels)
         if images.shape[1] == 3:
             images = images.movedim(1, -1)
 
-        logging.info(f"Final Image Shape: {images.shape}")
+        logging.info("Final Image Shape: %s", images.shape)
 
         j: int = 0
         file_saved: bool = False
         while not file_saved and j < 40:
             for i, image in enumerate(images):
-                sampler_file_name = os.path.join(folder_paths.get_temp_directory(), f"{filename}_sampler_{sampler_idx}_{i}_{j}.png")
+                sampler_file_name = os.path.join(
+                    folder_paths.get_temp_directory(), f"{filename}_sampler_{sampler_idx}_{i}_{j}.png"
+                )
                 if os.path.exists(sampler_file_name):
                     j += 1
                     continue  # Skip if already exists
                 img_np = 255.0 * image.cpu().numpy()
                 img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
                 img_pil.save(sampler_file_name)
-                logging.info(f"Saved refiner output to {sampler_file_name}")
+                logging.info("Saved refiner output to %s", sampler_file_name)
                 file_saved = True
                 created_images.append(sampler_file_name)
                 break
         if not file_saved:
-            raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")         
+            raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")
         if len(created_images) >= steps:
             return created_images
 
@@ -161,7 +160,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
 
     bbox_provider = UltralyticsDetectorProvider()
     # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
-    bbox_detector, _ = bbox_provider.doit(bbox_model_name)
+    bbox_detector, _c = bbox_provider.doit(bbox_model_name)
 
     sam_loader = SAMLoader()
     # SAMLoader.load_model returns (SAM_MODEL,)
@@ -169,7 +168,11 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
 
     face_detailer = FaceDetailer()
 
-    # FaceDetailer.doit(image, model, clip, vae, guide_size, guide_size_for, max_size, seed, steps, cfg, sampler_name, scheduler, denoise, feather, noise_mask, force_inpaint, bbox_threshold, bbox_dilation, bbox_crop_factor, sam_detection_hint, sam_dilation, sam_threshold, sam_bbox_expansion, sam_mask_hint_threshold, sam_mask_hint_use_negative, drop_size, bbox_detector, sam_model_opt, segm_detector_opt, detailer_hook)
+    # FaceDetailer.doit(image, model, clip, vae, guide_size, guide_size_for, max_size,
+    # seed, steps, cfg, sampler_name, scheduler, denoise, feather, noise_mask, force_inpaint,
+    # bbox_threshold, bbox_dilation, bbox_crop_factor, sam_detection_hint, sam_dilation, sam_threshold,
+    # sam_bbox_expansion, sam_mask_hint_threshold, sam_mask_hint_use_negative, drop_size, bbox_detector,
+    # sam_model_opt, segm_detector_opt, detailer_hook)
 
     # Note: Arguments might vary slightly depending on version, checking signature would be good.
     # Assuming standard arguments based on common usage.
@@ -193,7 +196,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
 
     # validate face_arguments keys against FaceDetailer.doit signature would be ideal
     face_signature = inspect.signature(face_detailer.doit)
-    for key in face_arguments.keys():
+    for key in face_arguments:
         if key not in face_signature.parameters:
             raise ValueError(f"Unexpected argument '{key}' for FaceDetailer.doit")
 
@@ -211,7 +214,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
             img_np = 255.0 * image.cpu().numpy()
             img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
             img_pil.save(output_file_name)
-            logging.info(f"Saved refiner output to {output_file_name}")
+            logging.info("Saved refiner output to %s", output_file_name)
             output_file_saved = True
             created_images.append(output_file_name)
             break
@@ -222,10 +225,3 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
 
     logging.info("Done.")
     return created_images
-
-
-if __name__ == "__main__":
-    with torch.inference_mode():
-        # pass first argument as filename if needed
-        assert len(argv) > 1, "Please provide a filename as an argument."
-        main(argv[1])
