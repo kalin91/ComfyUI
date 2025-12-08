@@ -15,7 +15,7 @@ from tkinter import ttk, messagebox, simpledialog
 from PIL import Image, ImageTk
 import torch
 from app.logger import setup_logger
-import json_gui.json_manager_starter as json_manager_starter
+import json_gui.utils as gui_utils
 from comfy.cli_args import args
 
 logger = logging.getLogger()
@@ -463,8 +463,8 @@ class JSONManagerApp:
         try:
             folders = [
                 f
-                for f in os.listdir(json_manager_starter.get_main_images_path())
-                if os.path.isdir(os.path.join(json_manager_starter.get_main_images_path(), f))
+                for f in os.listdir(gui_utils.get_main_images_path())
+                if os.path.isdir(os.path.join(gui_utils.get_main_images_path(), f))
             ]
             folders.sort()
             self.folder_combo["values"] = folders
@@ -477,7 +477,7 @@ class JSONManagerApp:
         foldername = self.folder_var.get()
         assert foldername, "Folder name is empty"
         try:
-            look_path = os.path.join(json_manager_starter.get_main_images_path(), foldername)
+            look_path = os.path.join(gui_utils.get_main_images_path(), foldername)
             files = [f for f in os.listdir(look_path) if f.endswith(".json")]
             files.sort()
             self.file_combo["values"] = files
@@ -491,12 +491,12 @@ class JSONManagerApp:
         if not foldername:
             return
 
-        filepath = os.path.join(json_manager_starter.get_main_images_path(), foldername)
+        filepath = os.path.join(gui_utils.get_main_images_path(), foldername)
         try:
             # validate that foldername is a directory
             assert os.path.isdir(filepath), f"{foldername} is not a valid directory"
             del self.flow
-            script_path = json_manager_starter.get_main_script_path(foldername)
+            script_path = gui_utils.get_main_script_path(foldername)
 
             def load_script(loading_win: tk.Toplevel = None) -> None:
                 """Load the script for the selected folder and set the flow function."""
@@ -554,7 +554,7 @@ class JSONManagerApp:
         body = self.flow_body
         assert body is not None, "Flow body is not set"
 
-        filepath = os.path.join(json_manager_starter.get_main_images_path(), foldername, filename)
+        filepath = os.path.join(gui_utils.get_main_images_path(), foldername, filename)
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -605,7 +605,7 @@ class JSONManagerApp:
                 new_filename = filename if filename.endswith(".json") else f"{filename}.json"
             foldername = self.folder_var.get()
             assert foldername, "Folder name is empty"
-            new_filepath = os.path.join(json_manager_starter.get_main_images_path(), foldername, new_filename)
+            new_filepath = os.path.join(gui_utils.get_main_images_path(), foldername, new_filename)
 
             with open(new_filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -657,7 +657,7 @@ class JSONManagerApp:
 
                 with torch.inference_mode():
                     image_paths = flow_fn(
-                        os.path.join(json_manager_starter.get_main_images_path(), foldername),
+                        os.path.join(gui_utils.get_main_images_path(), foldername),
                         filename_without_ext,
                         steps,
                     )

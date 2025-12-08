@@ -1,4 +1,4 @@
-""""""
+""" Module defining the Flow class for loading and managing flow data from JSON files. """
 
 import os
 import json

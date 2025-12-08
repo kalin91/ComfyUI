@@ -57,7 +57,12 @@ class SimpleKSampler:
     def to_dict(self) -> dict:
         """Converts the SimpleKSampler instance to a dictionary."""
         logging.info(
-            f"Sampling 1 with seed={self._seed}, steps={self._steps}, cfg={self._cfg}, sampler={self._sampler_name}, scheduler={self._scheduler}..."
+            "Sampling 1 with seed=%s, steps=%s, cfg=%s, sampler=%s, scheduler=%s...",
+            self._seed,
+            self._steps,
+            self._cfg,
+            self._sampler_name,
+            self._scheduler,
         )
 
         return {
@@ -91,7 +96,7 @@ class EmptyLatent:
     @property
     def latent(self) -> torch.Tensor:
         """Generates and returns an empty latent tensor."""
-        logging.info(f"Creating empty latent {self._width}x{self._height}...")
+        logging.info("Creating empty latent %sx%s...", self._width, self._height)
 
         return torch.zeros(
             [self._batch_size, 16, self._height // 8, self._width // 8],
@@ -295,15 +300,15 @@ class FaceDetailer(SimpleKSampler):
         """Returns the drop size."""
         return self._drop_size
 
-#    @property
-#    def refiner_ratio(self) -> float:
-#        """Returns the refiner ratio."""
-#        return self._refiner_ratio
+    #    @property
+    #    def refiner_ratio(self) -> float:
+    #        """Returns the refiner ratio."""
+    #        return self._refiner_ratio
 
-#    @property
-#    def batch_size(self) -> int:
-#        """Returns the batch size."""
-#        return self._batch_size
+    #    @property
+    #    def batch_size(self) -> int:
+    #        """Returns the batch size."""
+    #        return self._batch_size
 
     @property
     def cycle(self) -> int:
@@ -372,8 +377,8 @@ class FaceDetailer(SimpleKSampler):
                 "noise_mask": self._noise_mask,
                 "force_inpaint": self._force_inpaint,
                 "drop_size": self._drop_size,
-               # "refiner_ratio": self._refiner_ratio,
-               # "batch_size": self._batch_size,
+                # "refiner_ratio": self._refiner_ratio,
+                # "batch_size": self._batch_size,
                 "cycle": self._cycle,
                 "bbox_threshold": self._bbox_threshold,
                 "bbox_dilation": self._bbox_dilation,
@@ -404,8 +409,8 @@ class FaceDetailer(SimpleKSampler):
         noise_mask: bool,
         force_inpaint: bool,
         drop_size: int,
-       # refiner_ratio: float,
-       # batch_size: int,
+        # refiner_ratio: float,
+        # batch_size: int,
         cycle: int,
         bbox_threshold: float,
         bbox_dilation: int,
@@ -426,8 +431,8 @@ class FaceDetailer(SimpleKSampler):
         self._noise_mask = noise_mask
         self._force_inpaint = force_inpaint
         self._drop_size = drop_size
-      #  self._refiner_ratio = refiner_ratio
-      #  self._batch_size = batch_size
+        #  self._refiner_ratio = refiner_ratio
+        #  self._batch_size = batch_size
         self._cycle = cycle
         self._bbox_threshold = bbox_threshold
         self._bbox_dilation = bbox_dilation

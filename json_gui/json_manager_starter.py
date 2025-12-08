@@ -41,7 +41,8 @@ def apply_custom_paths() -> None:
         logging.info("Setting output directory to: %s", output_dir)
         folder_paths.set_output_directory(output_dir)
 
-    # These are the default folders that checkpoints, clip and vae models will be saved to when using CheckpointSave, etc.. nodes
+    # These are the default folders that checkpoints,
+    # clip and vae models will be saved to when using CheckpointSave, etc.. nodes
     folder_paths.add_model_folder_path("checkpoints", os.path.join(folder_paths.get_output_directory(), "checkpoints"))
     folder_paths.add_model_folder_path("clip", os.path.join(folder_paths.get_output_directory(), "clip"))
     folder_paths.add_model_folder_path("vae", os.path.join(folder_paths.get_output_directory(), "vae"))
@@ -70,37 +71,3 @@ def apply_custom_paths() -> None:
         folder_paths.get_user_directory(),
     ]:
         os.makedirs(dir_path, exist_ok=True)
-
-
-def get_main_images_path() -> str:
-    """Returns the path to the main images directory."""
-
-    ret_path: str = os.path.join(folder_paths.get_user_directory(), "images")
-    if not os.path.exists(ret_path):
-        os.makedirs(ret_path)
-    return ret_path
-
-
-def get_main_script_path(script_name: str) -> str:
-    """Returns the path to an specific script."""
-    script_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "scripts", f"{script_name}.py")
-    # Verify that the script exists and is a file
-    assert os.path.isfile(script_dir), f"Script {script_name} does not exist."
-    return script_dir
-
-
-def get_input_files_recursive() -> list[str]:
-    """Returns a list of input files filtered by content types."""
-    input_folder = folder_paths.get_input_directory()
-    output_list = set()
-    files, _ = folder_paths.recursive_search(input_folder, excluded_dir_names=[".git"])
-    output_list.update(folder_paths.filter_files_content_types(files, ["image"]))
-    return sorted(output_list)
-
-
-def get_folder_files_recursive(folder: str) -> list[str]:
-    """Retrieves the list of filenames and the directory they are located in."""
-    input_dir = folder_paths.get_filename_list_(folder)
-    result: tuple[list[str], str] = input_dir[0], next(iter(input_dir[1].keys()))
-    logging.debug("Input directory for %s files: %s", folder, result)
-    return result
