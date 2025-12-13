@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import logging
+import random
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
 import threading
@@ -185,21 +186,47 @@ class JSONTreeEditor(ttk.Frame):
 
                     self.text_entries[full_key] = text_widget
 
-                elif body_type == "string" or body_type == "float" or body_type == "int":
+                elif body_type in ("string", "float", "int"):
                     label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
                     label.pack(side="left")
-                    entry = ttk.Entry(frame, width=60)
-                    entry.insert(0, str(value))
-                    entry.pack(side="left", padx=5, fill="x", expand=True)
                     if body_type == "string":
+                        entry = ttk.Entry(frame, width=60)
+                        entry.insert(0, str(value))
+                        entry.pack(side="left", padx=5, fill="x", expand=True)
                         assert isinstance(value, str), f"Value for key '{key}' must be a string"
                         self.string_entries[full_key] = entry
-                    elif body_type == "int":
-                        assert isinstance(value, int), f"Value for key '{key}' must be an int"
-                        self.int_entries[full_key] = entry
-                    elif body_type == "float":
-                        assert isinstance(value, float), f"Value for key '{key}' must be a float"
-                        self.float_entries[full_key] = entry
+                    elif body_type in ("int", "float"):
+                        step: float = body[key].get("step", 1.0)
+                        min_val: float = body[key].get("min", -999999999999999)
+                        max_val: float = body[key].get("max", 999999999999999)
+                        format_str: str = "%.0f" if body_type == "int" else body[key].get("format", "%.1f")
+                        entry = ttk.Spinbox(
+                            frame, from_=min_val, to=max_val, increment=step, width=25, wrap=True, format=format_str
+                        )
+                        entry.set(value)
+                        entry.pack(side="left", padx=(0, 5))
+                        randomizable = body[key].get("randomizable", False)
+                        if randomizable:
+                            entry.config(foreground="blue")
+
+                            def set_random(e=entry, mn=min_val, mx=max_val, fmt=format_str, bt=body_type) -> None:
+                                """Set a random value in the entry."""
+                                if bt == "int":
+                                    val = random.randint(int(mn), int(mx))
+                                    e.set(val)
+                                else:
+                                    val = random.uniform(float(mn), float(mx))
+                                    e.set(fmt % val)
+
+                            rand_btn = ttk.Button(frame, text="Random", command=set_random)
+                            rand_btn.pack(side="left", padx=(0, 5))
+
+                        if body_type == "int":
+                            assert isinstance(value, int), f"Value for key '{key}' must be an int"
+                            self.int_entries[full_key] = entry
+                        elif body_type == "float":
+                            assert isinstance(value, float), f"Value for key '{key}' must be a float"
+                            self.float_entries[full_key] = entry
                     else:
                         raise ValueError(f"Unsupported body type: {body_type}")
                 elif body_type == "file":

@@ -25,6 +25,9 @@ props:
       resolution:
         type: int
         isArray: false
+        min: 16
+        max: 16384
+        step: 16
       scale_stick_for_xinsr_cn:
         type: bool
         isArray: false
@@ -39,12 +42,24 @@ props:
       strength:
         type: float
         isArray: false
+        min: 0.0
+        max: 10.0
+        step: 0.01
+        format: "%.2f"
       start_percentage:
         type: float
         isArray: false
+        min: 0.0
+        max: 1.0
+        step: 0.001
+        format: "%.3f"
       end_percentage:
         type: float
         isArray: false
+        min: 0.0
+        max: 1.0
+        step: 0.001
+        format: "%.3f"
   empty_latent:
     type: object
     isArray: false
@@ -52,12 +67,20 @@ props:
       width:
         type: int
         isArray: false
+        min: 16
+        max: 16384
+        step: 16
       height:
         type: int
         isArray: false
+        min: 16
+        max: 16384
+        step: 16
       batch_size:
         type: int
         isArray: false
+        min: 1
+        max: 4096
   simple_k_sampler:
     type: object
     isArray: true
@@ -65,12 +88,19 @@ props:
       seed:
         type: int
         isArray: false
+        randomizable: true
       steps:
         type: int
         isArray: false
+        min: 1
+        max: 10000
       cfg:
         type: float
         isArray: false
+        min: 0.0
+        max: 100.0
+        step: 0.1
+        format: "%.2f"
       sampler_name:
         type: string
         isArray: false
@@ -80,6 +110,10 @@ props:
       denoise:
         type: float
         isArray: false
+        min: 0.0
+        max: 1.0
+        step: 0.01
+        format: "%.2f"
   face_detailer:
     type: object
     isArray: false
@@ -87,12 +121,19 @@ props:
       seed:
         type: int
         isArray: false
+        randomizable: true
       steps:
         type: int
         isArray: false
+        min: 1
+        max: 10000
       cfg:
         type: float
         isArray: false
+        min: 0.0
+        max: 100.0
+        step: 0.1
+        format: "%.2f"
       sampler_name:
         type: string
         isArray: false
@@ -102,18 +143,30 @@ props:
       denoise:
         type: float
         isArray: false
+        min: 0.0
+        max: 1.0
+        step: 0.01
+        format: "%.2f"
       guide_size:
         type: int
         isArray: false
+        min: 64
+        max: 16384
+        step: 8
       guide_size_for:
         type: bool
         isArray: false
       max_size:
         type: int
         isArray: false
+        min: 64
+        max: 16384
+        step: 8
       feather:
         type: int
         isArray: false
+        min: 0
+        max: 100
       noise_mask:
         type: bool
         isArray: false
@@ -123,33 +176,59 @@ props:
       drop_size:
         type: int
         isArray: false
+        min: 1
+        max: 16384
       cycle:
         type: int
         isArray: false
+        min: 1
+        max: 10
       bbox_threshold:
         type: float
         isArray: false
+        min: 0.0
+        max: 1.0
+        step: 0.01
+        format: "%.2f"
       bbox_dilation:
         type: int
         isArray: false
+        min: -512
+        max: 512
       bbox_crop_factor:
         type: float
         isArray: false
+        min: 1.0
+        max: 10.0
+        step: 0.1
+        format: "%.1f"
       sam_detection_hint:
         type: string
         isArray: false
       sam_dilation:
         type: int
         isArray: false
+        min: -512
+        max: 512
       sam_threshold:
         type: float
         isArray: false
+        min: 0.0
+        max: 1.0
+        step: 0.01
+        format: "%.2f"
       sam_bbox_expansion:
         type: int
         isArray: false
+        min: 0
+        max: 1000
       sam_mask_hint_threshold:
         type: float
         isArray: false
+        min: 0.0
+        max: 1.0
+        step: 0.01
+        format: "%.2f"
       sam_mask_hint_use_negative:
         type: string
         isArray: false
