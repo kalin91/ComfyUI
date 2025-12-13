@@ -55,7 +55,7 @@ def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
 class JSONTreeEditor(ttk.Frame):
     """A hierarchical, editable view for JSON data."""
 
-    def __init__(self, parent: tk.Widget):
+    def __init__(self, parent: tk.Widget, on_change: Optional[Callable[[], None]] = None):
         super().__init__(parent)
         self.data: dict[str, Any] = {}
         self.string_entries: dict[str, tk.Entry] = {}
@@ -65,6 +65,7 @@ class JSONTreeEditor(ttk.Frame):
         self.boolean_vars: dict[str, tk.BooleanVar] = {}
         self.list_entries: dict[str, list[dict[str, Any]]] = {}
         self.file_entries: dict[str, ttk.Combobox] = {}
+        self._on_change = on_change  # Callback when any value changes
 
         # Create canvas with scrollbar
         self.canvas = tk.Canvas(self, highlightthickness=0)
@@ -112,6 +113,8 @@ class JSONTreeEditor(ttk.Frame):
         assert "props" in body, "'props' key not found in body"
 
         self._build_tree(self.scrollable_frame, data, body["props"], "")
+        # Use after_idle to ensure all widget events are processed before marking as clean
+        self.after_idle(lambda: self._on_change(False))
 
     def _build_tree(
         self, parent: tk.Widget, data: dict[str, Any], body: dict[str, Any], prefix: str, indent: int = 0
@@ -163,7 +166,7 @@ class JSONTreeEditor(ttk.Frame):
                     label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
                     label.pack(side="left")
                     var = tk.BooleanVar(value=value)
-                    check = ttk.Checkbutton(frame, variable=var)
+                    check = ttk.Checkbutton(frame, variable=var, command=self._notify_change)
                     check.pack(side="left", padx=5)
                     self.boolean_vars[full_key] = var
                 elif body_type == "multiline_string":
@@ -180,6 +183,7 @@ class JSONTreeEditor(ttk.Frame):
                     text_widget.configure(yscrollcommand=text_scrollbar.set)
 
                     text_widget.insert("1.0", str(value))
+                    text_widget.bind("<<Modified>>", self._on_text_modified)
 
                     text_widget.pack(side="left", fill="both", expand=True)
                     text_scrollbar.pack(side="right", fill="y")
@@ -192,6 +196,7 @@ class JSONTreeEditor(ttk.Frame):
                     if body_type == "string":
                         entry = ttk.Entry(frame, width=60)
                         entry.insert(0, str(value))
+                        entry.bind("<KeyRelease>", lambda e: self._notify_change())
                         entry.pack(side="left", padx=5, fill="x", expand=True)
                         assert isinstance(value, str), f"Value for key '{key}' must be a string"
                         self.string_entries[full_key] = entry
@@ -201,9 +206,17 @@ class JSONTreeEditor(ttk.Frame):
                         max_val: float = body[key].get("max", 999999999999999)
                         format_str: str = "%.0f" if body_type == "int" else body[key].get("format", "%.1f")
                         entry = ttk.Spinbox(
-                            frame, from_=min_val, to=max_val, increment=step, width=25, wrap=True, format=format_str
+                            frame,
+                            from_=min_val,
+                            to=max_val,
+                            increment=step,
+                            width=25,
+                            wrap=True,
+                            format=format_str,
+                            command=self._notify_change,
                         )
                         entry.set(value)
+                        entry.bind("<KeyRelease>", lambda e: self._notify_change())
                         entry.pack(side="left", padx=(0, 5))
                         randomizable = body[key].get("randomizable", False)
                         if randomizable:
@@ -211,6 +224,7 @@ class JSONTreeEditor(ttk.Frame):
 
                             def set_random(e=entry, mn=min_val, mx=max_val, fmt=format_str, bt=body_type) -> None:
                                 """Set a random value in the entry."""
+                                self._notify_change()
                                 if bt == "int":
                                     val = random.randint(int(mn), int(mx))
                                     e.set(val)
@@ -245,6 +259,7 @@ class JSONTreeEditor(ttk.Frame):
                     combo["values"] = files
                     if value in files:
                         combo.set(value)
+                    combo.bind("<<ComboboxSelected>>", lambda e: self._notify_change())
                     combo.pack(side="left", padx=5, fill="x", expand=True)
                     self.file_entries[full_key] = combo
                 else:
@@ -320,6 +335,18 @@ class JSONTreeEditor(ttk.Frame):
             return int(value_str)
         except ValueError:
             return value_str
+
+    def _notify_change(self) -> None:
+        """Notify that a value has changed."""
+        if self._on_change:
+            self._on_change(True)
+
+    def _on_text_modified(self, event: tk.Event) -> None:
+        """Handle text widget modification."""
+        widget = event.widget
+        if widget.edit_modified():
+            self._notify_change()
+            widget.edit_modified(False)
 
 
 class ImageViewer(ttk.Frame):
@@ -441,6 +468,7 @@ class JSONManagerApp:
 
     def __init__(self, root: tk.Tk):
         self._flow = None
+        self._has_changes = False
         self.root = root
         self.root.title("JSON Configuration Manager")
 
@@ -457,6 +485,9 @@ class JSONManagerApp:
 
         self._setup_ui()
         self._refresh_folder_list()
+
+        # Intercept window close
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _setup_ui(self) -> None:
         """Setup the user interface."""
@@ -503,7 +534,7 @@ class JSONManagerApp:
 
         # Left side - JSON Editor
         editor_frame = ttk.LabelFrame(paned, text="JSON Editor", padding="5")
-        self.json_editor = JSONTreeEditor(editor_frame)
+        self.json_editor = JSONTreeEditor(editor_frame, on_change=self._mark_changes)
         self.json_editor.pack(fill="both", expand=True)
         paned.add(editor_frame, weight=1)
 
@@ -517,6 +548,58 @@ class JSONManagerApp:
         self.status_var = tk.StringVar(value="Ready")
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief="sunken", anchor="w")
         status_bar.pack(fill="x", pady=(10, 0))
+
+    def _mark_changes(self, toggle_changes: bool) -> None:
+        """Mark that there are unsaved changes."""
+        if toggle_changes:
+            if not self._has_changes:
+                self._has_changes = True
+                self._update_title()
+        else:
+            self._has_changes = False
+            self._update_title()
+
+    def _update_title(self) -> None:
+        """Update window title to reflect unsaved changes."""
+        base_title = "JSON Configuration Manager"
+        if self._has_changes:
+            self.root.title(f"*{base_title} - Unsaved Changes")
+        else:
+            self.root.title(base_title)
+
+    def _check_unsaved_changes(self) -> bool:
+        """Check for unsaved changes and prompt user.
+
+        Returns:
+            True if it's safe to proceed (no changes or user chose to discard/save).
+            False if user cancelled the operation.
+        """
+        if not self._has_changes:
+            return True
+
+        response = messagebox.askyesnocancel(
+            "Unsaved Changes",
+            (
+                "You have unsaved changes.\n\nDo you want to save before continuing?\n\n"
+                "If you choose 'No', changes will be discarded."
+            ),
+            icon="warning",
+        )
+
+        if response is None:  # Cancel
+            return False
+        elif response:  # Yes - save
+            self._save_file()
+            return not self._has_changes  # Return True only if save succeeded
+        else:  # No - discard
+            self._on_file_selected(skip_check=True)
+            self._mark_changes(False)
+            return True
+
+    def _on_close(self) -> None:
+        """Handle window close event."""
+        if self._check_unsaved_changes():
+            self.root.destroy()
 
     def _refresh_folder_list(self) -> None:
         """Refresh the list of Flow folders."""
@@ -551,6 +634,9 @@ class JSONManagerApp:
         """Handle file selection."""
         foldername = self.folder_var.get()
         if not foldername:
+            return
+
+        if not self._check_unsaved_changes():
             return
 
         filepath = os.path.join(gui_utils.get_main_images_path(), foldername)
@@ -593,6 +679,7 @@ class JSONManagerApp:
             # Clear previous data
             self.json_editor.load_data({}, {"props": {}})
             self.current_file = None
+            self._mark_changes(False)
             self.status_var.set(f"Selected folder: {foldername}")
             self.image_viewer.clear()
             self._refresh_file_list()
@@ -603,7 +690,7 @@ class JSONManagerApp:
             messagebox.showerror("Error", f"Failed to load file: {foldername},\n{e}")
             logging.exception("Failed to load folder %s", foldername)
 
-    def _on_file_selected(self, _event: tk.Event | None = None) -> None:
+    def _on_file_selected(self, _event: tk.Event | None = None, skip_check: bool = False) -> None:
         """Handle file selection."""
         foldername = self.folder_var.get()
         assert foldername, "Folder name is empty"
@@ -611,6 +698,9 @@ class JSONManagerApp:
         assert flow_body is not None, "Flow body is not set"
         filename = self.file_var.get()
         if not filename:
+            return
+
+        if not skip_check and not self._check_unsaved_changes():
             return
 
         body = self.flow_body
@@ -622,6 +712,7 @@ class JSONManagerApp:
                 data = json.load(f)
             self.json_editor.load_data(data, body)
             self.current_file = filepath
+            self._mark_changes(False)
             self.status_var.set(f"Loaded: {filename}")
             self.image_viewer.clear()
         except json.JSONDecodeError as e:
@@ -641,6 +732,7 @@ class JSONManagerApp:
             data = self.json_editor.get_data()
             with open(self.current_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+            self._mark_changes(False)
             self.status_var.set(f"Saved: {os.path.basename(self.current_file)}")
             messagebox.showinfo("Success", "File saved successfully")
         except Exception as e:
@@ -676,6 +768,7 @@ class JSONManagerApp:
             self._refresh_file_list()
             self.file_var.set(new_filename)
             self.current_file = new_filepath
+            self._mark_changes(False)
             self.status_var.set(f"Saved as: {new_filename}")
             messagebox.showinfo("Success", f"File saved as:\n{new_filename}")
         except Exception as e:
@@ -686,6 +779,9 @@ class JSONManagerApp:
         """Execute the main function with the selected JSON."""
         if not self.current_file:
             messagebox.showwarning("Warning", "No file selected")
+            return
+
+        if not self._check_unsaved_changes():
             return
 
         try:
