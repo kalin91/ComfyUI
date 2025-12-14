@@ -279,43 +279,40 @@ def _create_numeric_entry(
 ) -> None:
     """Create a numeric entry widget."""
     type_val: type = int if body_type == "int" else float
-    step: float = body[key].get("step", 1.0)
     min_val: float = body[key].get("min", -999999999999999)
     max_val: float = body[key].get("max", 999999999999999)
     format_str: str = "%.0f" if body_type == "int" else body[key].get("format", "%.1f")
     last_val: tuple[list[Any], list[ttk.Spinbox]] = ([value], [])
 
-    vcmd = (
-        register_call(_create_number_validator(min_val, max_val, type_val, last_val, format_str)),
-        "%P",
-    )
-    ivcmd = (register_call(_create_on_invalid_handler(body_type, min_val, max_val, format_str, notify_change)),)
     entry = ttk.Spinbox(
         frame,
         from_=min_val,
         to=max_val,
-        increment=step,
+        increment=body[key].get("step", 1.0),
         width=25,
         wrap=True,
         format=format_str,
         command=notify_change,
         validate="focusout",
-        validatecommand=vcmd,
-        invalidcommand=ivcmd,
+        validatecommand=(
+            register_call(_create_number_validator(min_val, max_val, type_val, last_val, format_str)),
+            "%P",
+        ),
+        invalidcommand=(
+            register_call(_create_on_invalid_handler(body_type, min_val, max_val, format_str, notify_change)),
+        ),
     )
     entry.set(type_val(value))
     last_val[1].append(entry)
     entry.bind("<KeyRelease>", lambda e: notify_change())
     entry.pack(side="left", padx=(0, 5))
-    randomizable = body[key].get("randomizable", False)
-    if randomizable:
+    if body[key].get("randomizable", False):
         entry.config(foreground="blue")
-        rand_btn = ttk.Button(
+        ttk.Button(
             frame,
             text="Random",
             command=_create_randomize_handler(entry, min_val, max_val, format_str, body_type, notify_change),
-        )
-        rand_btn.pack(side="left", padx=(0, 5))
+        ).pack(side="left", padx=(0, 5))
 
         assert isinstance(type_val(value), type_val), f"Value for key '{key}' must be an {body_type}"
     if body_type == "int":
