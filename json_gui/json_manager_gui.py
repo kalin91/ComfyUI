@@ -6,6 +6,7 @@ import json
 import os
 import logging
 import random
+import re
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
 import threading
@@ -377,14 +378,26 @@ class JSONTreeEditor(ttk.Frame):
 
     def _set_nested_value(self, data: dict, key_path: str, value: Any) -> None:
         """Set a value in a nested dict using dot notation."""
-        keys = key_path.split(".")
-        current = data
-        for key in keys[:-1]:
-            if key in current:
-                current = current[key]
-        final_key = keys[-1]
-        if final_key in current:
-            current[final_key] = value
+        try:
+            keys = key_path.split(".")
+            current = data
+            for key in keys[:-1]:
+                # Handle list indices
+                match = re.match(r"(\w+)\[(\d+)\]", key)
+                if match:
+                    list_key = match.group(1)
+                    index = int(match.group(2))
+                    assert list_key in current and isinstance(current[list_key], list), f"List key '{list_key}' not found in data"
+                    current = current[list_key][index]
+                if key in current:
+                    current = current[key]
+            final_key = keys[-1]
+            if final_key in current:
+                current[final_key] = value
+        except Exception as e:
+            messagebox.showerror("Error", f"Error setting nested value for key '{key_path}':\n{e}")
+            logging.exception("Error setting nested value for key '%s': %s", key_path, e)
+            raise e
 
     def _parse_value(self, value_str: str) -> Any:
         """Parse a string value to its appropriate type.
