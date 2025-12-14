@@ -37,6 +37,55 @@ COMBO_CONSTANTS = {
 }
 
 
+def _create_string_entry(
+    frame: ttk.Widget,
+    key: str,
+    value: Any,
+    full_key: str,
+    notify_change: Callable[[], None],
+    string_entries: dict[str, tk.Entry],
+) -> None:
+    """Create a string entry widget."""
+    entry = ttk.Entry(frame, width=60)
+    entry.insert(0, str(value))
+    entry.bind("<KeyRelease>", lambda e: notify_change())
+    entry.pack(side="left", padx=5, fill="x", expand=True)
+    assert isinstance(value, str), f"Value for key '{key}' must be a string"
+    string_entries[full_key] = entry
+
+
+def _create_multiline_text_widget(
+    parent: ttk.Widget,
+    frame: ttk.Widget,
+    key: str,
+    value: Any,
+    full_key: str,
+    indent: int,
+    on_text_modified: Callable[[tk.Event], None],
+    text_entries: dict[str, tk.Text],
+) -> None:
+    """Create a multiline text widget."""
+    assert isinstance(value, str), f"Value for key '{key}' must be a string"
+    # Multiline text box for positive/negative prompts
+    label = ttk.Label(frame, text=f"{key}:", font=("TkDefaultFont", 10, "bold"))
+    label.pack(anchor="w")
+
+    text_frame = ttk.Frame(parent)
+    text_frame.pack(fill="x", padx=(indent * 20 + 10, 5), pady=5)
+
+    text_widget = tk.Text(text_frame, height=8, width=80, wrap="word")
+    text_scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
+    text_widget.configure(yscrollcommand=text_scrollbar.set)
+
+    text_widget.insert("1.0", str(value))
+    text_widget.bind("<<Modified>>", on_text_modified)
+
+    text_widget.pack(side="left", fill="both", expand=True)
+    text_scrollbar.pack(side="right", fill="y")
+
+    text_entries[full_key] = text_widget
+
+
 def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
     """Show a modal loading window."""
     loading_win = tk.Toplevel(parent)
@@ -183,36 +232,29 @@ class JSONTreeEditor(ttk.Frame):
                     check.pack(side="left", padx=5)
                     self.boolean_vars[full_key] = var
                 elif body_type == "multiline_string":
-                    assert isinstance(value, str), f"Value for key '{key}' must be a string"
-                    # Multiline text box for positive/negative prompts
-                    label = ttk.Label(frame, text=f"{key}:", font=("TkDefaultFont", 10, "bold"))
-                    label.pack(anchor="w")
-
-                    text_frame = ttk.Frame(parent)
-                    text_frame.pack(fill="x", padx=(indent * 20 + 10, 5), pady=5)
-
-                    text_widget = tk.Text(text_frame, height=8, width=80, wrap="word")
-                    text_scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
-                    text_widget.configure(yscrollcommand=text_scrollbar.set)
-
-                    text_widget.insert("1.0", str(value))
-                    text_widget.bind("<<Modified>>", self._on_text_modified)
-
-                    text_widget.pack(side="left", fill="both", expand=True)
-                    text_scrollbar.pack(side="right", fill="y")
-
-                    self.text_entries[full_key] = text_widget
+                    _create_multiline_text_widget(
+                        parent,
+                        frame,
+                        key,
+                        value,
+                        full_key,
+                        indent,
+                        self._on_text_modified,
+                        self.text_entries,
+                    )
 
                 elif body_type in ("string", "float", "int"):
                     label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
                     label.pack(side="left")
                     if body_type == "string":
-                        entry = ttk.Entry(frame, width=60)
-                        entry.insert(0, str(value))
-                        entry.bind("<KeyRelease>", lambda e: self._notify_change())
-                        entry.pack(side="left", padx=5, fill="x", expand=True)
-                        assert isinstance(value, str), f"Value for key '{key}' must be a string"
-                        self.string_entries[full_key] = entry
+                        _create_string_entry(
+                            frame,
+                            key,
+                            value,
+                            full_key,
+                            self._notify_change,
+                            self.string_entries,
+                        )
                     elif body_type in ("int", "float"):
                         type_val: type = int if body_type == "int" else float
                         step: float = body[key].get("step", 1.0)
