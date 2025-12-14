@@ -54,6 +54,87 @@ def _create_string_entry(
     string_entries[full_key] = entry
 
 
+def _create_boolean_entry(
+    frame: ttk.Widget,
+    key: str,
+    value: Any,
+    full_key: str,
+    notify_change: Callable[[], None],
+    boolean_vars: dict[str, tk.BooleanVar],
+) -> None:
+    """Create a boolean entry widget."""
+    assert isinstance(value, bool), f"Value for key '{key}' must be a bool in list item '{key}'"
+    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+    label.pack(side="left")
+    var = tk.BooleanVar(value=value)
+    check = ttk.Checkbutton(frame, variable=var, command=notify_change)
+    check.pack(side="left", padx=5)
+    boolean_vars[full_key] = var
+
+
+def _create_file_entry(
+    frame: ttk.Widget,
+    key: str,
+    value: Any,
+    full_key: str,
+    body: dict[str, Any],
+    notify_change: Callable[[], None],
+    file_entries: dict[str, ttk.Combobox],
+) -> None:
+    """Create a file entry widget."""
+    assert isinstance(value, str), f"Value for key '{key}' must be a string"
+    assert "parent" in body[key], f"'parent' not specified for file type key '{key}' in body"
+    body_parent = body[key]["parent"]
+    assert isinstance(body_parent, str), f"'parent' for file type key '{key}' must be a string"
+    files: list[str] = []
+    if body_parent == "input":
+        files = gui_utils.get_input_files_recursive()
+    else:
+        files = gui_utils.get_folder_files_recursive(body_parent)
+    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+    label.pack(side="left")
+    combo = ttk.Combobox(frame, width=57, state="readonly")
+    combo["values"] = files
+    if value in files:
+        combo.set(value)
+    combo.bind("<<ComboboxSelected>>", lambda e: notify_change())
+    combo.pack(side="left", padx=5, fill="x", expand=True)
+    file_entries[full_key] = combo
+
+
+def _create_combo_entry(
+    frame: ttk.Widget,
+    key: str,
+    value: Any,
+    full_key: str,
+    body: dict[str, Any],
+    notify_change: Callable[[], None],
+    combo_entries: dict[str, ttk.Combobox],
+) -> None:
+    """Create a combo entry widget."""
+    assert isinstance(value, str), f"Value for key '{key}' must be a string"
+    assert (
+        "constant" in body[key] or "values" in body[key]
+    ), f"'constant' or 'values' not specified for combo type key '{key}' in body"
+    combo_values: list[str]
+    if "values" in body[key]:
+        combo_values = body[key]["values"]
+    else:
+        assert body[key]["constant"] in COMBO_CONSTANTS, (
+            f"Constant '{body[key]['constant']}' not found " f"in constants dictionary for combo type key '{key}'"
+        )
+        combo_values = COMBO_CONSTANTS[body[key]["constant"]]
+    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+    label.pack(side="left")
+    combo = ttk.Combobox(frame, width=57, state="readonly")
+    combo["values"] = combo_values
+    if value in combo_values:
+        combo.set(value)
+    combo.bind("<<ComboboxSelected>>", lambda e: notify_change())
+    combo.pack(side="left", padx=5, fill="x", expand=True)
+    combo_entries[full_key] = combo
+
+
 def _create_multiline_text_widget(
     parent: ttk.Widget,
     frame: ttk.Widget,
@@ -224,13 +305,14 @@ class JSONTreeEditor(ttk.Frame):
                     label.pack(anchor="w")
                     self._build_tree(parent, value, body[key]["props"], full_key, indent + 1)
                 elif body_type == "bool":
-                    assert isinstance(value, bool), f"Value for key '{key}' must be a bool in list item '{key}'"
-                    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-                    label.pack(side="left")
-                    var = tk.BooleanVar(value=value)
-                    check = ttk.Checkbutton(frame, variable=var, command=self._notify_change)
-                    check.pack(side="left", padx=5)
-                    self.boolean_vars[full_key] = var
+                    _create_boolean_entry(
+                        frame,
+                        key,
+                        value,
+                        full_key,
+                        self._notify_change,
+                        self.boolean_vars,
+                    )
                 elif body_type == "multiline_string":
                     _create_multiline_text_widget(
                         parent,
@@ -366,47 +448,25 @@ class JSONTreeEditor(ttk.Frame):
                     else:
                         raise ValueError(f"Unsupported body type: {body_type}")
                 elif body_type == "file":
-                    assert isinstance(value, str), f"Value for key '{key}' must be a string"
-                    assert "parent" in body[key], f"'parent' not specified for file type key '{key}' in body"
-                    body_parent = body[key]["parent"]
-                    assert isinstance(body_parent, str), f"'parent' for file type key '{key}' must be a string"
-                    files: list[str] = []
-                    if body_parent == "input":
-                        files = gui_utils.get_input_files_recursive()
-                    else:
-                        files = gui_utils.get_folder_files_recursive(body_parent)
-                    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-                    label.pack(side="left")
-                    combo = ttk.Combobox(frame, width=57, state="readonly")
-                    combo["values"] = files
-                    if value in files:
-                        combo.set(value)
-                    combo.bind("<<ComboboxSelected>>", lambda e: self._notify_change())
-                    combo.pack(side="left", padx=5, fill="x", expand=True)
-                    self.file_entries[full_key] = combo
+                    _create_file_entry(
+                        frame,
+                        key,
+                        value,
+                        full_key,
+                        body,
+                        self._notify_change,
+                        self.file_entries,
+                    )
                 elif body_type == "combo":
-                    assert isinstance(value, str), f"Value for key '{key}' must be a string"
-                    assert (
-                        "constant" in body[key] or "values" in body[key]
-                    ), f"'constant' or 'values' not specified for combo type key '{key}' in body"
-                    combo_values: list[str]
-                    if "values" in body[key]:
-                        combo_values = body[key]["values"]
-                    else:
-                        assert body[key]["constant"] in COMBO_CONSTANTS, (
-                            f"Constant '{body[key]['constant']}' not found "
-                            f"in constants dictionary for combo type key '{key}'"
-                        )
-                        combo_values = COMBO_CONSTANTS[body[key]["constant"]]
-                    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-                    label.pack(side="left")
-                    combo = ttk.Combobox(frame, width=57, state="readonly")
-                    combo["values"] = combo_values
-                    if value in combo_values:
-                        combo.set(value)
-                    combo.bind("<<ComboboxSelected>>", lambda e: self._notify_change())
-                    combo.pack(side="left", padx=5, fill="x", expand=True)
-                    self.combo_entries[full_key] = combo
+                    _create_combo_entry(
+                        frame,
+                        key,
+                        value,
+                        full_key,
+                        body,
+                        self._notify_change,
+                        self.combo_entries,
+                    )
                 else:
                     raise ValueError(f"Unsupported body type: {body_type}")
         except Exception as e:
