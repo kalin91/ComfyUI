@@ -72,6 +72,47 @@ def _create_boolean_entry(
     boolean_vars[full_key] = var
 
 
+def _create_open_preview_handler(p_combo: ttk.Combobox, p_folder: str, p_frame: ttk.Widget) -> Callable[[], None]:
+    """Create a handler to open a preview window."""
+
+    def _open_preview(folder=p_folder, combo=p_combo, frame=p_frame) -> None:
+        """Open a floating preview window for the selected image."""
+        path = os.path.join(folder, combo.get())
+        if not path:
+            messagebox.showwarning("Preview", "Select a file to preview")
+            return
+        try:
+            img = Image.open(path)
+        except Exception as e:
+            messagebox.showerror("Preview Error", f"Cannot open image:\n{e}")
+            return
+
+        parent_win = frame.winfo_toplevel()
+        win = tk.Toplevel(parent_win)
+        win.title(f"Preview - {os.path.basename(path)}")
+        win.transient(parent_win)
+        win.resizable(True, True)
+
+        # Compute max preview size relative to screen
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        max_w = min(int(sw * 0.7), 1600)
+        max_h = min(int(sh * 0.8), 1200)
+        try:
+            img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+        except Exception:
+            img.thumbnail((max_w, max_h))
+
+        photo = ImageTk.PhotoImage(img)
+        img_label = ttk.Label(win, image=photo)
+        img_label.image = photo  # Keep reference
+        img_label.pack(padx=12, pady=12)
+
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
+
+    return _open_preview
+
+
 def _create_file_entry(
     frame: ttk.Widget,
     key: str,
@@ -86,19 +127,23 @@ def _create_file_entry(
     assert "parent" in body[key], f"'parent' not specified for file type key '{key}' in body"
     body_parent = body[key]["parent"]
     assert isinstance(body_parent, str), f"'parent' for file type key '{key}' must be a string"
-    files: list[str] = []
-    if body_parent == "input":
-        files = gui_utils.get_input_files_recursive()
-    else:
-        files = gui_utils.get_folder_files_recursive(body_parent)
     label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
     label.pack(side="left")
     combo = ttk.Combobox(frame, width=57, state="readonly")
+    files: list[str]
+    folder: str
+    combo.bind("<<ComboboxSelected>>", lambda e: notify_change())
+    combo.pack(side="left", padx=5, fill="x", expand=True)
+    if body_parent == "input":
+        files, folder = gui_utils.get_input_files_recursive()
+        ttk.Button(frame, text="Preview", command=_create_open_preview_handler(combo, folder, frame)).pack(
+            side="left", padx=(5, 5)
+        )
+    else:
+        files, folder = gui_utils.get_folder_files_recursive(body_parent)
     combo["values"] = files
     if value in files:
         combo.set(value)
-    combo.bind("<<ComboboxSelected>>", lambda e: notify_change())
-    combo.pack(side="left", padx=5, fill="x", expand=True)
     file_entries[full_key] = combo
 
 
