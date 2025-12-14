@@ -242,6 +242,29 @@ def _create_on_invalid_handler(
     return on_invalid
 
 
+def _create_randomize_handler(
+    entry: ttk.Spinbox,
+    min_val: float,
+    max_val: float,
+    format_str: str,
+    body_type: str,
+    notify_change: Callable[[], None],
+) -> Callable[[], None]:
+    """Create a randomize button handler."""
+
+    def set_random(e=entry, mn=min_val, mx=max_val, fmt=format_str, bt=body_type, on_change=notify_change) -> None:
+        """Set a random value in the entry."""
+        on_change()
+        if bt == "int":
+            val = random.randint(int(mn), int(mx))
+            e.set(val)
+        else:
+            val = random.uniform(float(mn), float(mx))
+            e.set(fmt % val)
+
+    return set_random
+
+
 def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
     """Show a modal loading window."""
     loading_win = tk.Toplevel(parent)
@@ -451,18 +474,13 @@ class JSONTreeEditor(ttk.Frame):
                         randomizable = body[key].get("randomizable", False)
                         if randomizable:
                             entry.config(foreground="blue")
-
-                            def set_random(e=entry, mn=min_val, mx=max_val, fmt=format_str, bt=body_type) -> None:
-                                """Set a random value in the entry."""
-                                self._notify_change()
-                                if bt == "int":
-                                    val = random.randint(int(mn), int(mx))
-                                    e.set(val)
-                                else:
-                                    val = random.uniform(float(mn), float(mx))
-                                    e.set(fmt % val)
-
-                            rand_btn = ttk.Button(frame, text="Random", command=set_random)
+                            rand_btn = ttk.Button(
+                                frame,
+                                text="Random",
+                                command=_create_randomize_handler(
+                                    entry, min_val, max_val, format_str, body_type, self._notify_change
+                                ),
+                            )
                             rand_btn.pack(side="left", padx=(0, 5))
 
                         if body_type == "int":
