@@ -9,7 +9,6 @@ from PIL import Image
 import comfy.sd
 import comfy.sample
 import folder_paths
-import prompt_server_mocked as _  # noqa: F401
 
 
 from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer, SAMLoader

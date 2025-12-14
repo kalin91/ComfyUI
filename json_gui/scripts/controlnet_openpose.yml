@@ -102,10 +102,12 @@ props:
         step: 0.1
         format: "%.2f"
       sampler_name:
-        type: string
+        type: combo
+        constant: "sampler_names"
         isArray: false
       scheduler:
-        type: string
+        type: combo
+        constant: "scheduler_names"
         isArray: false
       denoise:
         type: float
@@ -135,11 +137,13 @@ props:
         step: 0.1
         format: "%.2f"
       sampler_name:
-        type: string
+        type: combo
         isArray: false
+        constant: "sampler_names"
       scheduler:
-        type: string
+        type: combo
         isArray: false
+        constant: "scheduler_handlers"
       denoise:
         type: float
         isArray: false
@@ -203,8 +207,9 @@ props:
         step: 0.1
         format: "%.1f"
       sam_detection_hint:
-        type: string
+        type: combo
         isArray: false
+        constant: "sam_detection_hint"
       sam_dilation:
         type: int
         isArray: false

@@ -19,12 +19,22 @@ import torch
 from app.logger import setup_logger
 import json_gui.utils as gui_utils
 from comfy.cli_args import args
+from comfy.samplers import SAMPLER_NAMES, SCHEDULER_NAMES, SCHEDULER_HANDLERS
+from custom_nodes.ComfyUI_Impact_Pack.modules.impact.core import ADDITIONAL_SCHEDULERS
+from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer
 
 logger = logging.getLogger()
 if logger.hasHandlers():
     logger.handlers.clear()
 
 setup_logger(log_level=args.verbose, use_stdout=args.log_stdout)
+
+COMBO_CONSTANTS = {
+    "sampler_names": SAMPLER_NAMES,
+    "scheduler_names": SCHEDULER_NAMES,
+    "scheduler_handlers": list(SCHEDULER_HANDLERS) + ADDITIONAL_SCHEDULERS,
+    "sam_detection_hint": FaceDetailer.INPUT_TYPES()["required"]["sam_detection_hint"][0],
+}
 
 
 def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
@@ -66,6 +76,7 @@ class JSONTreeEditor(ttk.Frame):
         self.boolean_vars: dict[str, tk.BooleanVar] = {}
         self.list_entries: dict[str, list[dict[str, Any]]] = {}
         self.file_entries: dict[str, ttk.Combobox] = {}
+        self.combo_entries: dict[str, ttk.Combobox] = {}
         self._on_change = on_change  # Callback when any value changes
 
         # Create canvas with scrollbar
@@ -106,6 +117,7 @@ class JSONTreeEditor(ttk.Frame):
         self.boolean_vars.clear()
         self.list_entries.clear()
         self.file_entries.clear()
+        self.combo_entries.clear()
 
         # Clear existing widgets
         for widget in self.scrollable_frame.winfo_children():
@@ -257,12 +269,13 @@ class JSONTreeEditor(ttk.Frame):
 
                         def on_invalid(b_type=body_type, p_min=min_val, p_max=max_val, p_format=format_str) -> None:
                             """Handle invalid input."""
-                            max_decimals = (
-                                0 if b_type == "int" else len(p_format.split(".")[-1])
-                            )
+                            max_decimals = 0 if b_type == "int" else len(p_format.split(".")[-1])
                             messagebox.showwarning(
                                 "Invalid Input",
-                                f"Please enter a valid {b_type} between {p_min} and {p_max} with up to {max_decimals} decimal places.",
+                                (
+                                    f"Please enter a valid {b_type} between {p_min} and "
+                                    f"{p_max} with up to {max_decimals} decimal places."
+                                ),
                             )
                             self._notify_change()
 
@@ -329,6 +342,29 @@ class JSONTreeEditor(ttk.Frame):
                     combo.bind("<<ComboboxSelected>>", lambda e: self._notify_change())
                     combo.pack(side="left", padx=5, fill="x", expand=True)
                     self.file_entries[full_key] = combo
+                elif body_type == "combo":
+                    assert isinstance(value, str), f"Value for key '{key}' must be a string"
+                    assert (
+                        "constant" in body[key] or "values" in body[key]
+                    ), f"'constant' or 'values' not specified for combo type key '{key}' in body"
+                    combo_values: list[str]
+                    if "values" in body[key]:
+                        combo_values = body[key]["values"]
+                    else:
+                        assert body[key]["constant"] in COMBO_CONSTANTS, (
+                            f"Constant '{body[key]['constant']}' not found "
+                            f"in constants dictionary for combo type key '{key}'"
+                        )
+                        combo_values = COMBO_CONSTANTS[body[key]["constant"]]
+                    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+                    label.pack(side="left")
+                    combo = ttk.Combobox(frame, width=57, state="readonly")
+                    combo["values"] = combo_values
+                    if value in combo_values:
+                        combo.set(value)
+                    combo.bind("<<ComboboxSelected>>", lambda e: self._notify_change())
+                    combo.pack(side="left", padx=5, fill="x", expand=True)
+                    self.combo_entries[full_key] = combo
                 else:
                     raise ValueError(f"Unsupported body type: {body_type}")
         except Exception as e:
@@ -365,6 +401,10 @@ class JSONTreeEditor(ttk.Frame):
         for full_key, combo in self.file_entries.items():
             self._set_nested_value(result, full_key, combo.get())
 
+        # Update combo entries
+        for full_key, combo in self.combo_entries.items():
+            self._set_nested_value(result, full_key, combo.get())
+
         return result
 
     def _deep_copy_structure(self, obj: Any) -> Any:
@@ -387,7 +427,9 @@ class JSONTreeEditor(ttk.Frame):
                 if match:
                     list_key = match.group(1)
                     index = int(match.group(2))
-                    assert list_key in current and isinstance(current[list_key], list), f"List key '{list_key}' not found in data"
+                    assert list_key in current and isinstance(
+                        current[list_key], list
+                    ), f"List key '{list_key}' not found in data"
                     current = current[list_key][index]
                 if key in current:
                     current = current[key]
