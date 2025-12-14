@@ -167,6 +167,81 @@ def _create_multiline_text_widget(
     text_entries[full_key] = text_widget
 
 
+def _create_number_validator(
+    min_val: float, max_val: float, type_val: type, last_val: tuple[list[Any], list[ttk.Spinbox]], format_str: str
+) -> Callable[[str], bool]:
+    """ "Create a number validator function."""
+
+    def validate_number(
+        value: str,
+        p_min=min_val,
+        p_max=max_val,
+        t_val: type = type_val,
+        l_val: tuple[list[Any], list[ttk.Spinbox]] = last_val,
+        p_format: str = format_str,
+    ) -> bool:
+        """Validate number input."""
+        try:
+            last_value = l_val[0][0] if l_val[0] else None
+            assert last_value or last_value == 0, "Last value not found for validation"
+            entry_widget: ttk.Spinbox = l_val[1][0] if l_val[1] else None
+            assert entry_widget, "Entry widget not found for validation"
+
+            def reset_value() -> None:
+                """Reset entry to last valid value."""
+                entry_widget.set(last_value)
+                entry_widget.config(validate="focusout")
+
+            if value in ("", "-", "."):
+                value = "0"
+
+            val = t_val(value)
+            if val < p_min or val > p_max:
+                entry_widget.after_idle(reset_value)
+                return False
+            if t_val == float and "." in value:
+                formatted_val = p_format % val
+                max_decimals: int = len(formatted_val.split(".")[-1])
+                actual_decimals: int = len(value.split(".")[-1])
+                if actual_decimals > max_decimals:
+                    entry_widget.after_idle(reset_value)
+                    return False
+            l_val[0][0] = val
+            entry_widget.after_idle(lambda: entry_widget.config(validate="focusout"))
+            return True
+        except ValueError:
+            entry_widget.after_idle(reset_value)
+            return False
+        except Exception:
+            logging.exception("Unexpected error during validation")
+            entry_widget.after_idle(reset_value)
+            return False
+
+    return validate_number
+
+
+def _create_on_invalid_handler(
+    body_type: str, min_val: float, max_val: float, format_str: str, notify_change: Callable[[], None]
+) -> Callable[[], None]:
+    """Create an invalid input handler."""
+
+    def on_invalid(
+        b_type=body_type, p_min=min_val, p_max=max_val, p_format=format_str, on_change=notify_change
+    ) -> None:
+        """Handle invalid input."""
+        max_decimals = 0 if b_type == "int" else len(p_format.split(".")[-1])
+        messagebox.showwarning(
+            "Invalid Input",
+            (
+                f"Please enter a valid {b_type} between {p_min} and "
+                f"{p_max} with up to {max_decimals} decimal places."
+            ),
+        )
+        on_change()
+
+    return on_invalid
+
+
 def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
     """Show a modal loading window."""
     loading_win = tk.Toplevel(parent)
@@ -345,66 +420,17 @@ class JSONTreeEditor(ttk.Frame):
                         format_str: str = "%.0f" if body_type == "int" else body[key].get("format", "%.1f")
                         last_val: tuple[list[Any], list[ttk.Spinbox]] = ([value], [])
 
-                        # Validación para entrada manual
-                        def validate_number(
-                            value: str,
-                            p_min=min_val,
-                            p_max=max_val,
-                            t_val: type = type_val,
-                            l_val: tuple[list[Any], list[ttk.Spinbox]] = last_val,
-                            p_format: str = format_str,
-                        ) -> bool:
-                            """Validate number input."""
-                            try:
-                                last_value = l_val[0][0] if l_val[0] else None
-                                assert last_value or last_value == 0, "Last value not found for validation"
-                                entry_widget: ttk.Spinbox = l_val[1][0] if l_val[1] else None
-                                assert entry_widget, "Entry widget not found for validation"
-
-                                def reset_value() -> None:
-                                    """Reset entry to last valid value."""
-                                    entry_widget.set(last_value)
-                                    entry_widget.config(validate="focusout")
-
-                                if value in ("", "-", "."):
-                                    value = "0"
-
-                                val = t_val(value)
-                                if val < p_min or val > p_max:
-                                    entry_widget.after_idle(reset_value)
-                                    return False
-                                if t_val == float and "." in value:
-                                    formatted_val = p_format % val
-                                    max_decimals: int = len(formatted_val.split(".")[-1])
-                                    actual_decimals: int = len(value.split(".")[-1])
-                                    if actual_decimals > max_decimals:
-                                        entry_widget.after_idle(reset_value)
-                                        return False
-                                l_val[0][0] = val
-                                entry_widget.after_idle(lambda: entry_widget.config(validate="focusout"))
-                                return True
-                            except ValueError:
-                                entry_widget.after_idle(reset_value)
-                                return False
-                            except Exception:
-                                logging.exception("Unexpected error during validation")
-                                entry_widget.after_idle(reset_value)
-                                return False
-
-                        def on_invalid(b_type=body_type, p_min=min_val, p_max=max_val, p_format=format_str) -> None:
-                            """Handle invalid input."""
-                            max_decimals = 0 if b_type == "int" else len(p_format.split(".")[-1])
-                            messagebox.showwarning(
-                                "Invalid Input",
-                                (
-                                    f"Please enter a valid {b_type} between {p_min} and "
-                                    f"{p_max} with up to {max_decimals} decimal places."
-                                ),
-                            )
-                            self._notify_change()
-
-                        vcmd = (self.register(validate_number), "%P")
-                        ivcmd = (self.register(on_invalid),)
+                        vcmd = (
+                            self.register(_create_number_validator(min_val, max_val, type_val, last_val, format_str)),
+                            "%P",
+                        )
+                        ivcmd = (
+                            self.register(
+                                _create_on_invalid_handler(
+                                    body_type, min_val, max_val, format_str, self._notify_change
+                                )
+                            ),
+                        )
                         entry = ttk.Spinbox(
                             frame,
                             from_=min_val,
