@@ -229,7 +229,7 @@ def _create_on_invalid_handler(
         b_type=body_type, p_min=min_val, p_max=max_val, p_format=format_str, on_change=notify_change
     ) -> None:
         """Handle invalid input."""
-        max_decimals = 0 if b_type == "int" else len(p_format.split(".")[-1])
+        max_decimals = 0 if b_type == "int" else int(p_format.replace("f", "").split(".")[-1])
         messagebox.showwarning(
             "Invalid Input",
             (
@@ -263,6 +263,65 @@ def _create_randomize_handler(
             e.set(fmt % val)
 
     return set_random
+
+
+def _create_numeric_entry(
+    frame: ttk.Widget,
+    key: str,
+    value: Any,
+    register_call: Callable[[Callable[..., Any]], str],
+    notify_change: Callable[[], None],
+    body: dict[str, Any],
+    body_type: str,
+    full_key: str,
+    int_entries: dict[str, tk.Entry],
+    float_entries: dict[str, tk.Entry],
+) -> None:
+    """Create a numeric entry widget."""
+    type_val: type = int if body_type == "int" else float
+    step: float = body[key].get("step", 1.0)
+    min_val: float = body[key].get("min", -999999999999999)
+    max_val: float = body[key].get("max", 999999999999999)
+    format_str: str = "%.0f" if body_type == "int" else body[key].get("format", "%.1f")
+    last_val: tuple[list[Any], list[ttk.Spinbox]] = ([value], [])
+
+    vcmd = (
+        register_call(_create_number_validator(min_val, max_val, type_val, last_val, format_str)),
+        "%P",
+    )
+    ivcmd = (register_call(_create_on_invalid_handler(body_type, min_val, max_val, format_str, notify_change)),)
+    entry = ttk.Spinbox(
+        frame,
+        from_=min_val,
+        to=max_val,
+        increment=step,
+        width=25,
+        wrap=True,
+        format=format_str,
+        command=notify_change,
+        validate="focusout",
+        validatecommand=vcmd,
+        invalidcommand=ivcmd,
+    )
+    entry.set(type_val(value))
+    last_val[1].append(entry)
+    entry.bind("<KeyRelease>", lambda e: notify_change())
+    entry.pack(side="left", padx=(0, 5))
+    randomizable = body[key].get("randomizable", False)
+    if randomizable:
+        entry.config(foreground="blue")
+        rand_btn = ttk.Button(
+            frame,
+            text="Random",
+            command=_create_randomize_handler(entry, min_val, max_val, format_str, body_type, notify_change),
+        )
+        rand_btn.pack(side="left", padx=(0, 5))
+
+        assert isinstance(type_val(value), type_val), f"Value for key '{key}' must be an {body_type}"
+    if body_type == "int":
+        int_entries[full_key] = entry
+    elif body_type == "float":
+        float_entries[full_key] = entry
 
 
 def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
@@ -436,59 +495,18 @@ class JSONTreeEditor(ttk.Frame):
                             self.string_entries,
                         )
                     elif body_type in ("int", "float"):
-                        type_val: type = int if body_type == "int" else float
-                        step: float = body[key].get("step", 1.0)
-                        min_val: float = body[key].get("min", -999999999999999)
-                        max_val: float = body[key].get("max", 999999999999999)
-                        format_str: str = "%.0f" if body_type == "int" else body[key].get("format", "%.1f")
-                        last_val: tuple[list[Any], list[ttk.Spinbox]] = ([value], [])
-
-                        vcmd = (
-                            self.register(_create_number_validator(min_val, max_val, type_val, last_val, format_str)),
-                            "%P",
-                        )
-                        ivcmd = (
-                            self.register(
-                                _create_on_invalid_handler(
-                                    body_type, min_val, max_val, format_str, self._notify_change
-                                )
-                            ),
-                        )
-                        entry = ttk.Spinbox(
+                        _create_numeric_entry(
                             frame,
-                            from_=min_val,
-                            to=max_val,
-                            increment=step,
-                            width=25,
-                            wrap=True,
-                            format=format_str,
-                            command=self._notify_change,
-                            validate="focusout",
-                            validatecommand=vcmd,
-                            invalidcommand=ivcmd,
+                            key,
+                            value,
+                            self.register,
+                            self._notify_change,
+                            body,
+                            body_type,
+                            full_key,
+                            self.int_entries,
+                            self.float_entries,
                         )
-                        entry.set(value)
-                        last_val[1].append(entry)
-                        entry.bind("<KeyRelease>", lambda e: self._notify_change())
-                        entry.pack(side="left", padx=(0, 5))
-                        randomizable = body[key].get("randomizable", False)
-                        if randomizable:
-                            entry.config(foreground="blue")
-                            rand_btn = ttk.Button(
-                                frame,
-                                text="Random",
-                                command=_create_randomize_handler(
-                                    entry, min_val, max_val, format_str, body_type, self._notify_change
-                                ),
-                            )
-                            rand_btn.pack(side="left", padx=(0, 5))
-
-                        if body_type == "int":
-                            assert isinstance(value, int), f"Value for key '{key}' must be an int"
-                            self.int_entries[full_key] = entry
-                        elif body_type == "float":
-                            assert isinstance(value, float), f"Value for key '{key}' must be a float"
-                            self.float_entries[full_key] = entry
                     else:
                         raise ValueError(f"Unsupported body type: {body_type}")
                 elif body_type == "file":
