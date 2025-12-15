@@ -1,5 +1,6 @@
 """ "JSON Tree Editor GUI Component."""
 
+import math
 import re
 import os
 import logging
@@ -28,22 +29,94 @@ def open_preview(file_path: str, frame: ttk.Widget) -> None:
         win.transient(parent_win)
         win.resizable(True, True)
 
+        # Container for canvas and scrollbars
+        container = tk.Frame(win, background="blue")
+        win.update_idletasks()  # Asegura que la ventana esté dibujada
+        container.pack(fill="both", expand=True)
+
+        v_scroll = ttk.Scrollbar(container, orient="vertical")
+        h_scroll = ttk.Scrollbar(container, orient="horizontal")
+
         # Compute max preview size relative to screen
         sw = win.winfo_screenwidth()
         sh = win.winfo_screenheight()
-        max_w = min(int(sw * 0.7), 1600)
-        max_h = min(int(sh * 0.8), 1200)
-        try:
-            img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-        except Exception:
-            img.thumbnail((max_w, max_h))
+        max_w = int(sw * 0.9)
+        max_h = int(sh * 0.9)
+
+        img_w, img_h = img.size
+
+        # Calculate window size (image size + padding, clamped to max screen size)
+        scale_ratio: float = min(max_w / img_w, max_h / img_h, 1)
+        win_w = math.ceil((img_w * scale_ratio) + v_scroll.winfo_reqwidth())
+        win_h = math.ceil((img_h * scale_ratio) + h_scroll.winfo_reqheight())
+
+        win.geometry(f"{win_w}x{win_h}")
+
+        # Variables for zoom
+        original_img = img.copy()
+
+        if scale_ratio < 1.0:
+            new_w = math.floor(img_w * scale_ratio)
+            new_h = math.floor(img_h * scale_ratio)
+            try:
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            except Exception:
+                img = img.resize((new_w, new_h))
+
+        canvas = tk.Canvas(container, highlightthickness=0, yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+
+        v_scroll.config(command=canvas.yview)
+        h_scroll.config(command=canvas.xview)
+
+        v_scroll.pack(side="right", fill="y")
+        h_scroll.pack(side="bottom", fill="x")
+        canvas.pack(side="left", fill="both", expand=True)
 
         photo = ImageTk.PhotoImage(img)
-        img_label = ttk.Label(win, image=photo)
-        img_label.image = photo  # Keep reference
-        img_label.pack(padx=12, pady=12)
+        image_item = canvas.create_image(0, 0, anchor="nw", image=photo)
+        canvas.image = photo  # Keep reference
 
-        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
+        # Set initial scrollregion
+        canvas.config(scrollregion=(0, 0, img.width, img.height))
+
+        def zoom(event) -> str:
+            """Zoom in or out on the image."""
+            nonlocal scale_ratio
+            if event.delta > 0 or event.num == 4:  # Zoom in
+                scale_ratio *= 1.1
+            elif event.delta < 0 or event.num == 5:  # Zoom out
+                scale_ratio /= 1.1
+
+            # Limit zoom
+            scale_ratio = max(0.1, min(scale_ratio, 5.0))
+
+            new_w = int(original_img.width * scale_ratio)
+            new_h = int(original_img.height * scale_ratio)
+
+            try:
+                resized = original_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            except Exception:
+                resized = original_img.resize((new_w, new_h))
+
+            new_photo = ImageTk.PhotoImage(resized)
+            canvas.itemconfig(image_item, image=new_photo)
+            canvas.image = new_photo
+            canvas.config(scrollregion=(0, 0, new_w, new_h))
+            return "break"
+
+        # Bind zoom events
+        # Bind to canvas specifically to override scroll bindings
+        canvas.bind("<Control-MouseWheel>", zoom)
+        canvas.bind("<Control-Button-4>", zoom)
+        canvas.bind("<Control-Button-5>", zoom)
+
+        # Also bind to window just in case focus is elsewhere
+        win.bind("<Control-MouseWheel>", zoom)  # Windows
+        win.bind("<Control-Button-4>", zoom)  # Linux scroll up
+        win.bind("<Control-Button-5>", zoom)  # Linux scroll down
+
+        # Bind scroll events for panning (Shift+Scroll for horizontal)
+        bind_frame_scroll_events(canvas, canvas)
     except Exception as e:
         logging.exception("Error opening preview window: %s", e)
         messagebox.showerror("Preview Error", f"Error opening preview:\n{e}")
