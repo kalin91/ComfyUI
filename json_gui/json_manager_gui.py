@@ -287,8 +287,8 @@ class JSONManagerApp:
         try:
             folders = [
                 f
-                for f in os.listdir(gui_utils.get_main_images_path())
-                if os.path.isdir(os.path.join(gui_utils.get_main_images_path(), f))
+                for f in os.listdir(gui_utils.get_scripts_folder_path())
+                if os.path.isdir(os.path.join(gui_utils.get_scripts_folder_path(), f)) and not f.startswith("__")
             ]
             folders.sort()
             self.folder_combo["values"] = folders
@@ -314,38 +314,42 @@ class JSONManagerApp:
 
     def _on_folder_selected(self, _event: tk.Event | None = None) -> None:
         """Handle file selection."""
-        foldername = self.folder_var.get()
-        if not foldername:
-            return
-
-        if not self._check_unsaved_changes():
-            return
-
-        filepath = os.path.join(gui_utils.get_main_images_path(), foldername)
         try:
+            foldername = self.folder_var.get()
+            if not foldername:
+                return
+
+            if not self._check_unsaved_changes():
+                return
+
+            filepath = os.path.join(gui_utils.get_main_images_path(), foldername)
+            logging.debug("Selected Flow folder: %s", filepath)
+
+            # if not exists, create it
+            if not os.path.exists(filepath):
+                os.makedirs(filepath)
+
             # validate that foldername is a directory
             assert os.path.isdir(filepath), f"{foldername} is not a valid directory"
             del self.flow
-            script_path = gui_utils.get_main_script_path(foldername)
+            flow, body = gui_utils.get_flow_and_body_path(foldername)
 
             def load_script() -> None:
                 """Load the script for the selected folder and set the flow function."""
                 # verify that the script has a main function
-                module_path = Path(script_path)
-                spec = importlib.util.spec_from_file_location(module_path.stem, script_path)
+                module_path = Path(flow)
+                spec = importlib.util.spec_from_file_location(module_path.stem, flow)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
-                assert hasattr(module, "main"), f"Script {script_path} does not have a main function"
+                assert hasattr(module, "main"), f"Script {flow} does not have a main function"
                 self.flow = getattr(module, "main")
-
 
             loading_modal.show_loading_modal(self.root, load_script, (), f"Loading Flow: {foldername}...")
             assert self.flow is not None, "Flow function is not set after loading script"
             self.folder_var.set(foldername)
 
             # Set flow body
-            flow_yaml_path = script_path.replace(".py", ".yml")
-            self.flow_body = flow_yaml_path
+            self.flow_body = body
 
             # Clear previous data
             self.json_editor.load_data({}, {"props": {}})
