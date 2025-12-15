@@ -1,0 +1,9 @@
+[submodule "custom_nodes/own_nodes"]
+	path = custom_nodes/own_nodes
+	url = git@github.com:kalin91/comfy_nodes.git
+[submodule "custom_nodes/comfyui_controlnet_aux"]
+	path = custom_nodes/comfyui_controlnet_aux
+	url = git@github.com:Fannovel16/comfyui_controlnet_aux.git
+[submodule "workspace_temp"]
+	path = workspace_temp
+	url = git@github.com:kalin91/comfy_ui_wk.git

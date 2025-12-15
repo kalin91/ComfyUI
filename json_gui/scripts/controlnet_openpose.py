@@ -1,0 +1,226 @@
+"""Script to run a ControlNet flow with Triple CLIP and FaceDetailer integration."""
+
+import inspect
+import os
+import logging
+import numpy as np
+from PIL import Image
+
+import comfy.sd
+import comfy.sample
+import folder_paths
+
+
+from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer, SAMLoader
+from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
+from json_gui.flow import Flow
+
+# Paths - User to replace these
+CHECKPOINT_PATH = "sd3.5_medium.safetensors"
+CLIP_G_PATH = "sd35m/clip_g.safetensors"
+CLIP_L_PATH = "sd35m/clip_l.safetensors"
+T5_PATH = "sd35m/t5xxl_fp16.safetensors"
+
+
+def main(path_file: str, filename: str, steps: int) -> list[str]:
+    """Main function to run the ControlNet flow."""
+    created_images: list[str] = []
+
+    flow: Flow = Flow(os.path.join(path_file, f"{filename}.json"))
+
+    # 1. Load Model and VAE
+    logging.info("Loading Checkpoint...")
+    ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", CHECKPOINT_PATH)
+    model, _a, vae, _b = comfy.sd.load_checkpoint_guess_config(
+        ckpt_path, output_vae=True, output_clip=False, embedding_directory=folder_paths.get_folder_paths("embeddings")
+    )
+
+    # 2. Load Triple CLIP
+    logging.info("Loading CLIPs...")
+    clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_G_PATH)
+    clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_L_PATH)
+    clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", T5_PATH)
+
+    clip = comfy.sd.load_clip(
+        ckpt_paths=[clip_path1, clip_path2, clip_path3],
+        embedding_directory=folder_paths.get_folder_paths("embeddings"),
+    )
+
+    # Run preprocessor
+    pose_image_tensor = flow.openpose_pose.tensor()
+
+    h: int = 0
+    pose_file_saved: bool = False
+    while not pose_file_saved and h < 40:
+        pose_filename = os.path.join(folder_paths.get_temp_directory(), f"{filename}_pose_preview_{h}.png")
+        if os.path.exists(pose_filename):
+            h += 1
+            continue  # Skip if already exists
+        img_np = 255.0 * pose_image_tensor[0].cpu().numpy()
+        img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
+        img_pil.save(pose_filename)
+        logging.info("Saved pose preview to %s", pose_filename)
+        pose_file_saved = True
+        created_images.append(pose_filename)
+        break
+    if not pose_file_saved:
+        raise RuntimeError("Failed to save pose preview after multiple attempts. clean up temp files.")
+    if len(created_images) >= steps:
+        return created_images
+
+    # 6. Encode Prompts
+    positive_prompt = flow.positive
+    negative_prompt = flow.negative
+
+    logging.info("Encoding prompts...")
+    tokens_pos = clip.tokenize(positive_prompt)
+    cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
+
+    tokens_neg = clip.tokenize(negative_prompt)
+    cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
+
+    # 7. Apply ControlNet Advanced
+    cond_pos_cnet, cond_neg_cnet = flow.apply_control_net.conditionals(cond_pos, cond_neg, pose_image_tensor, vae)
+
+    latent_image = flow.empty_latent.latent
+
+    for sampler_idx, current_sampler in enumerate(flow.simple_k_sampler):
+
+        # Prepare noise
+        noisy_latent_image = comfy.sample.fix_empty_latent_channels(model, latent_image)
+
+        noise = comfy.sample.prepare_noise(noisy_latent_image, current_sampler.seed, None)
+
+        sampler_arguments = current_sampler.to_dict()
+
+        sampler_arguments.update(
+            {
+                "model": model,
+                "noise": noise,
+                "positive": cond_pos_cnet,
+                "negative": cond_neg_cnet,
+                "latent_image": noisy_latent_image,
+                "disable_noise": False,
+                "start_step": None,
+                "last_step": None,
+                "force_full_denoise": False,
+                "noise_mask": None,
+                "callback": None,
+                "disable_pbar": False,
+            }
+        )
+
+        sampler_signature = inspect.signature(comfy.sample.sample)
+        for key in sampler_arguments.keys():
+            if key not in sampler_signature.parameters:
+                raise ValueError(f"Unexpected argument '{key}' for comfy.sample.sample")
+
+        latent_image = comfy.sample.sample(**sampler_arguments)
+
+        # 10. Decode
+        logging.info("Decoding...")
+        images = vae.decode(latent_image.clone())
+        logging.info("VAE Output Shape: %s", images.shape)
+
+        # Ensure BHWC (Batch, Height, Width, Channels)
+        if images.shape[1] == 3:
+            images = images.movedim(1, -1)
+
+        logging.info("Final Image Shape: %s", images.shape)
+
+        j: int = 0
+        file_saved: bool = False
+        while not file_saved and j < 40:
+            for i, image in enumerate(images):
+                sampler_file_name = os.path.join(
+                    folder_paths.get_temp_directory(), f"{filename}_sampler_{sampler_idx}_{i}_{j}.png"
+                )
+                if os.path.exists(sampler_file_name):
+                    j += 1
+                    continue  # Skip if already exists
+                img_np = 255.0 * image.cpu().numpy()
+                img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
+                img_pil.save(sampler_file_name)
+                logging.info("Saved refiner output to %s", sampler_file_name)
+                file_saved = True
+                created_images.append(sampler_file_name)
+                break
+        if not file_saved:
+            raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")
+        if len(created_images) >= steps:
+            return created_images
+
+    # 10.5 FaceDetailer
+    logging.info("Running FaceDetailer...")
+
+    # Load Models
+    bbox_model_name = "bbox/yolo11x_face_detect2.pt"
+    sam_model_name = "sam_vit_l_0b3195.pth"
+
+    bbox_provider = UltralyticsDetectorProvider()
+    # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
+    bbox_detector, _c = bbox_provider.doit(bbox_model_name)
+
+    sam_loader = SAMLoader()
+    # SAMLoader.load_model returns (SAM_MODEL,)
+    sam_model = sam_loader.load_model(sam_model_name)[0]
+
+    face_detailer = FaceDetailer()
+
+    # FaceDetailer.doit(image, model, clip, vae, guide_size, guide_size_for, max_size,
+    # seed, steps, cfg, sampler_name, scheduler, denoise, feather, noise_mask, force_inpaint,
+    # bbox_threshold, bbox_dilation, bbox_crop_factor, sam_detection_hint, sam_dilation, sam_threshold,
+    # sam_bbox_expansion, sam_mask_hint_threshold, sam_mask_hint_use_negative, drop_size, bbox_detector,
+    # sam_model_opt, segm_detector_opt, detailer_hook)
+
+    # Note: Arguments might vary slightly depending on version, checking signature would be good.
+    # Assuming standard arguments based on common usage.
+
+    face_arguments = flow.face_detailer.to_dict()
+
+    face_arguments.update(
+        {
+            "image": images,
+            "model": model,
+            "clip": clip,
+            "vae": vae,
+            "positive": cond_pos,
+            "negative": cond_neg,
+            "sam_model_opt": sam_model,
+            "segm_detector_opt": None,  # Not using segm detector here
+            "detailer_hook": None,
+            "bbox_detector": bbox_detector,
+        }
+    )
+
+    # validate face_arguments keys against FaceDetailer.doit signature would be ideal
+    face_signature = inspect.signature(face_detailer.doit)
+    for key in face_arguments:
+        if key not in face_signature.parameters:
+            raise ValueError(f"Unexpected argument '{key}' for FaceDetailer.doit")
+
+    result_images = face_detailer.doit(**face_arguments)[0]
+
+    # 11. Save Image
+    k: int = 0
+    output_file_saved: bool = False
+    while not output_file_saved and k < 40:
+        for i, image in enumerate(result_images):
+            output_file_name = os.path.join(folder_paths.get_output_directory(), f"{filename}_{i}_{k}.png")
+            if os.path.exists(output_file_name):
+                k += 1
+                continue  # Skip if already exists
+            img_np = 255.0 * image.cpu().numpy()
+            img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
+            img_pil.save(output_file_name)
+            logging.info("Saved refiner output to %s", output_file_name)
+            output_file_saved = True
+            created_images.append(output_file_name)
+            break
+    if not output_file_saved:
+        raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")
+    if len(created_images) >= steps:
+        return created_images
+
+    logging.info("Done.")
+    return created_images

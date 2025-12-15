@@ -24,3 +24,10 @@ web_custom_versions/
 openapi.yaml
 filtered-openapi.yaml
 uv.lock
+**/.mypy_cache
+workspace_temp/
+models
+out/
+runs
+.python-version
+poetry.lock
