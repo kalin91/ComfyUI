@@ -1,6 +1,5 @@
 """GUI Application for managing JSON configuration files."""
 
-import sys
 import importlib
 import inspect
 import json
@@ -8,7 +7,6 @@ import os
 import logging
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
-import threading
 import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
@@ -16,9 +14,9 @@ import yaml
 from PIL import Image, ImageTk
 import torch
 from app.logger import setup_logger
-import json_gui.utils as gui_utils
 from json_gui.json_tree_editor import JSONTreeEditor
 from json_gui.scroll_utils import bind_frame_scroll_events
+from json_gui import loading_modal, utils as gui_utils
 from comfy.cli_args import args
 
 
@@ -27,142 +25,6 @@ if logger.hasHandlers():
     logger.handlers.clear()
 
 setup_logger(log_level=args.verbose, use_stdout=args.log_stdout)
-
-
-class TkTextWriter:
-    """Writer that outputs to a Tkinter text widget."""
-
-    def __init__(self, text_widget):
-        self.text_widget = text_widget
-
-    def write_to_widget(self, msg) -> None:
-        """Write message to the text widget in a thread-safe manner."""
-        if not msg:
-            return
-
-        def append() -> None:
-            """
-            Append message to text widget.
-            It handles both normal messages and tqdm-style progress updates.
-            """
-
-            if not self.text_widget.winfo_exists():
-                return
-
-            self.text_widget.configure(state="normal")
-            if "\r" in msg:
-                chunks = msg.split("\r")
-                self.text_widget.insert(tk.END, chunks[0])
-                for chunk in chunks[1:]:
-                    self.text_widget.delete("end-1c linestart", "end-1c")
-                    self.text_widget.insert(tk.END, chunk)
-            else:
-                self.text_widget.insert(tk.END, msg)
-            self.text_widget.see(tk.END)
-            self.text_widget.configure(state="disabled")
-
-        try:
-            self.text_widget.after(0, append)
-        except tk.TclError:
-            pass
-
-
-class TkTextHandler(logging.Handler):
-    """Logging handler that writes to TkTextWriter."""
-
-    def __init__(self, writer):
-        super().__init__()
-        self.writer = writer
-
-    def emit(self, record) -> None:
-        """Emit a log record to the TkTextWriter."""
-        msg = self.format(record) + "\n"
-        self.writer.write_to_widget(msg)
-
-
-class TextRedirector:
-    """Redirect stdout/stderr to TkTextWriter and original streams."""
-
-    def __init__(self, writer, *orig_streams):
-        self.writer = writer
-        self.orig_streams = orig_streams
-
-    def write(self, s) -> None:
-        """Write to original streams and TkTextWriter."""
-        for stream in self.orig_streams:
-            stream.write(s)
-        self.writer.write_to_widget(s)
-
-    def flush(self) -> None:
-        """Flush original streams."""
-        for stream in self.orig_streams:
-            stream.flush()
-
-    def __getattr__(self, name) -> Any:
-        """Delegate attribute access to the first original stream."""
-        return getattr(self.orig_streams[0], name)
-
-
-def show_progress_window(parent: tk.Widget | None = None) -> tk.Toplevel:
-    """Show a progress window with logging output redirected to it."""
-    win = tk.Toplevel(parent)
-    win.title("Progreso")
-
-    width = win.winfo_screenwidth()
-    height = 400
-
-    win.geometry(f"{width}x{height}")
-
-    text = tk.Text(win, height=15, width=80, state="disabled")
-    text_scrollbar = ttk.Scrollbar(win, orient="vertical", command=text.yview)
-    text.configure(yscrollcommand=text_scrollbar.set)
-    text_scrollbar.pack(side="right", fill="y")
-    text.pack(fill="both", expand=True)
-
-    writer = TkTextWriter(text)
-
-    # ---- logging ----
-    handler = TkTextHandler(writer)
-    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-    logging.getLogger().addHandler(handler)
-    logging.getLogger().setLevel(logging.INFO)
-
-    # ---- stdout / stderr ----
-    sys.stdout = TextRedirector(writer, sys.__stdout__)
-    sys.stderr = TextRedirector(writer, sys.__stderr__)
-
-    return win
-
-
-def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
-    """Show a modal loading window."""
-    try:
-        loading_win = tk.Toplevel(parent)
-        loading_win.title("")
-        loading_win.geometry("250x80")
-        loading_win.transient(parent)
-        loading_win.grab_set()  # Hace la ventana modal
-        loading_win.resizable(False, False)
-        loading_win.protocol("WM_DELETE_WINDOW", lambda: None)  # Deshabilita cerrar
-
-        # Frame for text and scrollbar
-        frame = ttk.Frame(loading_win)
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        text_widget = tk.Text(frame, height=3, wrap="word")
-        text_widget.insert("1.0", message)
-        text_widget.config(state="disabled")
-        text_widget.pack(side="left", fill="both", expand=True)
-
-        # Horizontal scrollbar
-        x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
-        text_widget.configure(xscrollcommand=x_scroll.set)
-        x_scroll.pack(side="bottom", fill="x")
-        loading_win.progress_window = show_progress_window(parent)
-        return loading_win
-    except Exception as e:
-        logging.exception("Error showing loading modal: %s", e)
-        raise e
 
 
 class ImageViewer(ttk.Frame):
@@ -225,65 +87,6 @@ class ImageViewer(ttk.Frame):
         self.images.clear()
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
-
-
-def _close_progress_dialog(progress_win: tk.Toplevel) -> None:
-    """Close the progress window with a confirmation dialog."""
-    if not progress_win or not progress_win.winfo_exists():
-        return
-
-    try:
-        progress_win.deiconify()
-        progress_win.lift()
-        progress_win.focus_force()
-
-        dialog = tk.Toplevel(progress_win)
-        dialog.title("Close Progress Window")
-        dialog.geometry("350x120")
-        dialog.transient(progress_win)
-        dialog.grab_set()
-
-        # Center dialog
-        try:
-            x = progress_win.winfo_x() + (progress_win.winfo_width() // 2) - 175
-            y = progress_win.winfo_y() + (progress_win.winfo_height() // 2) - 60
-            dialog.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
-
-        lbl = ttk.Label(dialog, text="Do you want to close the progress window?", padding=20)
-        lbl.pack()
-
-        def on_accept() -> None:
-            try:
-                if progress_win.winfo_exists():
-                    progress_win.destroy()
-                if dialog.winfo_exists():
-                    dialog.destroy()
-            except Exception:
-                pass
-
-        def on_cancel() -> None:
-            try:
-                if dialog.winfo_exists():
-                    dialog.destroy()
-            except Exception:
-                pass
-
-        btn_frame = ttk.Frame(dialog)
-        btn_frame.pack(fill="x", pady=10)
-
-        ttk.Button(btn_frame, text="Accept", command=on_accept).pack(side="left", expand=True, padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side="left", expand=True, padx=5)
-
-        # Auto-close in 3 seconds
-        dialog.after(3000, on_accept)
-
-        # Handle window close button (X)
-        dialog.protocol("WM_DELETE_WINDOW", on_accept)
-
-    except Exception as e:
-        logging.exception("Error in close progress dialog: %s", e)
 
 
 class JSONManagerApp:
@@ -524,29 +327,18 @@ class JSONManagerApp:
             del self.flow
             script_path = gui_utils.get_main_script_path(foldername)
 
-            def load_script(loading_win: tk.Toplevel = None) -> None:
+            def load_script() -> None:
                 """Load the script for the selected folder and set the flow function."""
-                try:
-                    # verify that the script has a main function
-                    module_path = Path(script_path)
-                    spec = importlib.util.spec_from_file_location(module_path.stem, script_path)
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
-                    assert hasattr(module, "main"), f"Script {script_path} does not have a main function"
-                    self.flow = getattr(module, "main")
-                except Exception as e:
-                    messagebox.showerror("Error", f"Failed to load script:\n{e}")
-                    logging.exception("Failed to load script for folder %s", foldername)
-                    raise e
-                finally:
-                    if loading_win:
-                        loading_win.destroy()
+                # verify that the script has a main function
+                module_path = Path(script_path)
+                spec = importlib.util.spec_from_file_location(module_path.stem, script_path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                assert hasattr(module, "main"), f"Script {script_path} does not have a main function"
+                self.flow = getattr(module, "main")
 
-            loading_win = _show_loading_modal(self.root, message=f"Loading Flow: {foldername}...")
-            t = threading.Thread(target=load_script, args=(loading_win,))
-            t.start()
-            while t.is_alive():
-                self.root.after(100, self.root.update())
+
+            loading_modal.show_loading_modal(self.root, load_script, (), f"Loading Flow: {foldername}...")
             assert self.flow is not None, "Flow function is not set after loading script"
             self.folder_var.set(foldername)
 
@@ -684,7 +476,7 @@ class JSONManagerApp:
         self.status_var.set(f"Executing with {filename_without_ext}...")
         self.root.update()
 
-        def run_flow(loading_win: tk.Toplevel) -> None:
+        def run_flow() -> None:
             """Run the flow function in a separate thread."""
             try:
                 assert self.flow is not None, "Flow function is not set"
@@ -709,23 +501,11 @@ class JSONManagerApp:
 
             except Exception as e:
                 self.status_var.set("Execution failed")
-                messagebox.showerror("Execution Error", f"Failed to execute:\n{e}")
-                # log exception stack trace
-                logging.exception("Execution failed")
                 raise e
-            finally:
 
-                def cleanup() -> None:
-                    if loading_win:
-                        progress_win = getattr(loading_win, "progress_window", None)
-                        loading_win.destroy()
-                        if progress_win:
-                            _close_progress_dialog(progress_win)
-
-                self.root.after(0, cleanup)
-
-        loading_win = _show_loading_modal(self.root, message=f"Executing Flow {foldername}: {filename_without_ext}...")
-        threading.Thread(target=run_flow, args=(loading_win,)).start()
+        loading_modal.show_loading_modal(
+            self.root, run_flow, (), f"Executing Flow {foldername}: {filename_without_ext}...", True
+        )
 
 
 def main() -> None:
