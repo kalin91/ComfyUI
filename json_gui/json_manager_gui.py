@@ -188,6 +188,7 @@ class JSONManagerApp:
         self.folder_combo.bind("<<ComboboxSelected>>", self._on_folder_selected)
 
         ttk.Button(controls_frame, text="Refresh Flows", command=self._refresh_folder_list).pack(side="left", padx=5)
+        ttk.Button(controls_frame, text="Show Body", command=self._show_body).pack(side="left", padx=5)
 
         # File selector
         ttk.Label(controls_frame, text="JSON File:").pack(side="left", padx=(0, 5))
@@ -296,6 +297,55 @@ class JSONManagerApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read directory: {e}")
             logging.exception("Failed to read Flow folders")
+
+    def _show_body(self) -> None:
+        """Show the body.yml content."""
+        foldername = self.folder_var.get()
+        if not foldername:
+            messagebox.showwarning("Warning", "No Flow folder selected")
+            return
+
+        try:
+            _, body_path = gui_utils.get_flow_and_body_path(foldername)
+            if not os.path.exists(body_path):
+                messagebox.showerror("Error", f"Body file not found: {body_path}")
+                return
+
+            with open(body_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            # Create window
+            win = tk.Toplevel(self.root)
+            win.title(f"Body: {os.path.basename(body_path)}")
+            win.geometry("600x800")
+
+            # Text widget with scrollbar
+            frame = ttk.Frame(win)
+            frame.pack(fill="both", expand=True)
+
+            text = tk.Text(frame, wrap="none", font=("Consolas", 10))
+            text.insert("1.0", content)
+            text.config(state="disabled")
+
+            def select_all(_event=None) -> str:
+                """Select all text in the text widget."""
+                text.tag_add("sel", "1.0", "end")
+                return "break"
+
+            text.bind("<Control-a>", select_all)
+
+            v_scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+            h_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
+
+            text.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+
+            v_scroll.pack(side="right", fill="y")
+            h_scroll.pack(side="bottom", fill="x")
+            text.pack(side="left", fill="both", expand=True)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load body file:\n{e}")
+            logging.exception("Failed to show body file")
 
     def _refresh_file_list(self) -> None:
         """Refresh the list of JSON files."""
