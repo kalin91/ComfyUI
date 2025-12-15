@@ -29,3 +29,5 @@ workspace_temp/
 models
 out/
 runs
+.python-version
+poetry.lock
