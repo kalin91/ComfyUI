@@ -1,4 +1,5 @@
 """Utility functions for JSON GUI management."""
+
 import os
 import logging
 import folder_paths
@@ -13,12 +14,38 @@ def get_main_images_path() -> str:
     return ret_path
 
 
-def get_main_script_path(script_name: str) -> str:
-    """Returns the path to an specific script."""
-    script_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "scripts", f"{script_name}.py")
-    # Verify that the script exists and is a file
-    assert os.path.isfile(script_dir), f"Script {script_name} does not exist."
-    return script_dir
+def get_scripts_folder_path() -> str:
+    """Returns the path to the scripts folder."""
+    scripts_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "scripts")
+    if not os.path.exists(scripts_path):
+        os.makedirs(scripts_path)
+    return scripts_path
+
+
+def get_flow_and_body_paths(script_name: str) -> tuple[str, str]:
+    """
+    Returns a tuple containing the paths to the 'flow.py' and 'body.yml' files
+    within the specified script directory.
+
+    Args:
+        script_name (str): The name of the script directory.
+
+    Returns:
+        tuple[str, str]: Paths to 'flow.py' and 'body.yml' within the script directory.
+
+    Raises:
+        AssertionError: If the script directory or either file does not exist.
+    """
+    script_dir = os.path.join(get_scripts_folder_path(), script_name)
+    # Verify that the script dir exists and is a directory
+    assert os.path.isdir(script_dir), f"Script directory {script_name} does not exist."
+    flow = os.path.join(script_dir, "flow.py")
+    body = os.path.join(script_dir, "body.yml")
+
+    # Verify that flow and body exists and are files
+    assert os.path.isfile(flow), f"Flow script {flow} does not exist."
+    assert os.path.isfile(body), f"Body file {body} does not exist."
+    return flow, body
 
 
 def get_input_files_recursive() -> tuple[list[str], str]:

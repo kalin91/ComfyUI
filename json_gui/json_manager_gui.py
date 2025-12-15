@@ -188,6 +188,7 @@ class JSONManagerApp:
         self.folder_combo.bind("<<ComboboxSelected>>", self._on_folder_selected)
 
         ttk.Button(controls_frame, text="Refresh Flows", command=self._refresh_folder_list).pack(side="left", padx=5)
+        ttk.Button(controls_frame, text="Show Body", command=self._show_body).pack(side="left", padx=5)
 
         # File selector
         ttk.Label(controls_frame, text="JSON File:").pack(side="left", padx=(0, 5))
@@ -287,8 +288,8 @@ class JSONManagerApp:
         try:
             folders = [
                 f
-                for f in os.listdir(gui_utils.get_main_images_path())
-                if os.path.isdir(os.path.join(gui_utils.get_main_images_path(), f))
+                for f in os.listdir(gui_utils.get_scripts_folder_path())
+                if os.path.isdir(os.path.join(gui_utils.get_scripts_folder_path(), f)) and not f.startswith("__")
             ]
             folders.sort()
             self.folder_combo["values"] = folders
@@ -297,12 +298,62 @@ class JSONManagerApp:
             messagebox.showerror("Error", f"Failed to read directory: {e}")
             logging.exception("Failed to read Flow folders")
 
+    def _show_body(self) -> None:
+        """Show the body.yml content."""
+        foldername = self.folder_var.get()
+        if not foldername:
+            messagebox.showwarning("Warning", "No Flow folder selected")
+            return
+
+        try:
+            _, body_path = gui_utils.get_flow_and_body_paths(foldername)
+            if not os.path.exists(body_path):
+                messagebox.showerror("Error", f"Body file not found: {body_path}")
+                return
+
+            with open(body_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            # Create window
+            win = tk.Toplevel(self.root)
+            win.title(f"Body: {os.path.basename(body_path)}")
+            win.geometry("600x800")
+
+            # Text widget with scrollbar
+            frame = ttk.Frame(win)
+            frame.pack(fill="both", expand=True)
+
+            text = tk.Text(frame, wrap="none", font=("Consolas", 10))
+            text.insert("1.0", content)
+            text.config(state="disabled")
+
+            def select_all(_event=None) -> str:
+                """Select all text in the text widget."""
+                text.tag_add("sel", "1.0", "end")
+                return "break"
+
+            text.bind("<Control-a>", select_all)
+
+            v_scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+            h_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
+
+            text.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+
+            v_scroll.pack(side="right", fill="y")
+            h_scroll.pack(side="bottom", fill="x")
+            text.pack(side="left", fill="both", expand=True)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load body file:\n{e}")
+            logging.exception("Failed to show body file")
+
     def _refresh_file_list(self) -> None:
         """Refresh the list of JSON files."""
         foldername = self.folder_var.get()
         assert foldername, "Folder name is empty"
         try:
             look_path = os.path.join(gui_utils.get_main_images_path(), foldername)
+            logging.debug("Refreshing JSON file list in folder: %s", look_path)
             files = [f for f in os.listdir(look_path) if f.endswith(".json")]
             files.sort()
             self.file_combo["values"] = files
@@ -313,38 +364,41 @@ class JSONManagerApp:
 
     def _on_folder_selected(self, _event: tk.Event | None = None) -> None:
         """Handle file selection."""
-        foldername = self.folder_var.get()
-        if not foldername:
-            return
-
-        if not self._check_unsaved_changes():
-            return
-
-        filepath = os.path.join(gui_utils.get_main_images_path(), foldername)
         try:
+            foldername = self.folder_var.get()
+            if not foldername:
+                return
+
+            if not self._check_unsaved_changes():
+                return
+
+            filepath = os.path.join(gui_utils.get_main_images_path(), foldername)
+            logging.debug("Selected Flow folder: %s", filepath)
+
+            # if not exists, create it
+            if not os.path.exists(filepath):
+                os.makedirs(filepath)
+
             # validate that foldername is a directory
             assert os.path.isdir(filepath), f"{foldername} is not a valid directory"
             del self.flow
-            script_path = gui_utils.get_main_script_path(foldername)
+            flow, body = gui_utils.get_flow_and_body_paths(foldername)
 
             def load_script() -> None:
                 """Load the script for the selected folder and set the flow function."""
                 # verify that the script has a main function
-                module_path = Path(script_path)
-                spec = importlib.util.spec_from_file_location(module_path.stem, script_path)
+                module_path = Path(flow)
+                spec = importlib.util.spec_from_file_location(module_path.stem, flow)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
-                assert hasattr(module, "main"), f"Script {script_path} does not have a main function"
+                assert hasattr(module, "main"), f"Script {flow} does not have a main function"
                 self.flow = getattr(module, "main")
-
 
             loading_modal.show_loading_modal(self.root, load_script, (), f"Loading Flow: {foldername}...")
             assert self.flow is not None, "Flow function is not set after loading script"
-            self.folder_var.set(foldername)
 
             # Set flow body
-            flow_yaml_path = script_path.replace(".py", ".yml")
-            self.flow_body = flow_yaml_path
+            self.flow_body = body
 
             # Clear previous data
             self.json_editor.load_data({}, {"props": {}})
