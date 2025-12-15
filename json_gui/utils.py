@@ -22,8 +22,20 @@ def get_scripts_folder_path() -> str:
     return scripts_path
 
 
-def get_flow_and_body_path(script_name: str) -> tuple[str, str]:
-    """Returns the path to an specific script."""
+def get_flow_and_body_paths(script_name: str) -> tuple[str, str]:
+    """
+    Returns a tuple containing the paths to the 'flow.py' and 'body.yml' files
+    within the specified script directory.
+
+    Args:
+        script_name (str): The name of the script directory.
+
+    Returns:
+        tuple[str, str]: Paths to 'flow.py' and 'body.yml' within the script directory.
+
+    Raises:
+        AssertionError: If the script directory or either file does not exist.
+    """
     script_dir = os.path.join(get_scripts_folder_path(), script_name)
     # Verify that the script dir exists and is a directory
     assert os.path.isdir(script_dir), f"Script directory {script_name} does not exist."

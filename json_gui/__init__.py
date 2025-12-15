@@ -65,14 +65,14 @@ style = ttk.Style()
 if "clam" in style.theme_names():
     style.theme_use("clam")
 
-# Mostrar ventana de carga
+# Show loading window
 loading_win = show_loading(root)
 
 import server  # noqa: E402 pylint: disable=C0413
 
-# Aquí va la inicialización lenta
+# Slow initialization goes here
 server.PromptServer.instance = MockServer()
 
-# Cerrar ventana de carga
+# Close loading window
 loading_win.destroy()
 root.destroy()

@@ -306,7 +306,7 @@ class JSONManagerApp:
             return
 
         try:
-            _, body_path = gui_utils.get_flow_and_body_path(foldername)
+            _, body_path = gui_utils.get_flow_and_body_paths(foldername)
             if not os.path.exists(body_path):
                 messagebox.showerror("Error", f"Body file not found: {body_path}")
                 return
@@ -382,7 +382,7 @@ class JSONManagerApp:
             # validate that foldername is a directory
             assert os.path.isdir(filepath), f"{foldername} is not a valid directory"
             del self.flow
-            flow, body = gui_utils.get_flow_and_body_path(foldername)
+            flow, body = gui_utils.get_flow_and_body_paths(foldername)
 
             def load_script() -> None:
                 """Load the script for the selected folder and set the flow function."""
@@ -396,7 +396,6 @@ class JSONManagerApp:
 
             loading_modal.show_loading_modal(self.root, load_script, (), f"Loading Flow: {foldername}...")
             assert self.flow is not None, "Flow function is not set after loading script"
-            self.folder_var.set(foldername)
 
             # Set flow body
             self.flow_body = body
