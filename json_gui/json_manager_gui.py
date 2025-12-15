@@ -62,8 +62,8 @@ class TkTextWriter:
                 return
 
             self.text_widget.configure(state="normal")
-            if '\r' in msg:
-                chunks = msg.split('\r')
+            if "\r" in msg:
+                chunks = msg.split("\r")
                 self.text_widget.insert(tk.END, chunks[0])
                 for chunk in chunks[1:]:
                     self.text_widget.delete("end-1c linestart", "end-1c")
@@ -115,12 +115,20 @@ class TextRedirector:
         return getattr(self.orig_streams[0], name)
 
 
-def show_progress_window() -> tk.Toplevel:
+def show_progress_window(parent: tk.Widget | None = None) -> tk.Toplevel:
     """Show a progress window with logging output redirected to it."""
-    win = tk.Toplevel()
+    win = tk.Toplevel(parent)
     win.title("Progreso")
 
+    width = win.winfo_screenwidth()
+    height = 400
+
+    win.geometry(f"{width}x{height}")
+
     text = tk.Text(win, height=15, width=80, state="disabled")
+    text_scrollbar = ttk.Scrollbar(win, orient="vertical", command=text.yview)
+    text.configure(yscrollcommand=text_scrollbar.set)
+    text_scrollbar.pack(side="right", fill="y")
     text.pack(fill="both", expand=True)
 
     writer = TkTextWriter(text)
@@ -639,7 +647,7 @@ def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
         x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
         text_widget.configure(xscrollcommand=x_scroll.set)
         x_scroll.pack(side="bottom", fill="x")
-        show_progress_window()
+        loading_win.progress_window = show_progress_window(parent)
         return loading_win
     except Exception as e:
         logging.exception("Error showing loading modal: %s", e)
@@ -985,6 +993,65 @@ class ImageViewer(ttk.Frame):
         self.images.clear()
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
+
+
+def _close_progress_dialog(progress_win: tk.Toplevel) -> None:
+    """Close the progress window with a confirmation dialog."""
+    if not progress_win or not progress_win.winfo_exists():
+        return
+
+    try:
+        progress_win.deiconify()
+        progress_win.lift()
+        progress_win.focus_force()
+
+        dialog = tk.Toplevel(progress_win)
+        dialog.title("Close Progress Window")
+        dialog.geometry("350x120")
+        dialog.transient(progress_win)
+        dialog.grab_set()
+
+        # Center dialog
+        try:
+            x = progress_win.winfo_x() + (progress_win.winfo_width() // 2) - 175
+            y = progress_win.winfo_y() + (progress_win.winfo_height() // 2) - 60
+            dialog.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        lbl = ttk.Label(dialog, text="Do you want to close the progress window?", padding=20)
+        lbl.pack()
+
+        def on_accept() -> None:
+            try:
+                if progress_win.winfo_exists():
+                    progress_win.destroy()
+                if dialog.winfo_exists():
+                    dialog.destroy()
+            except Exception:
+                pass
+
+        def on_cancel() -> None:
+            try:
+                if dialog.winfo_exists():
+                    dialog.destroy()
+            except Exception:
+                pass
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill="x", pady=10)
+
+        ttk.Button(btn_frame, text="Accept", command=on_accept).pack(side="left", expand=True, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side="left", expand=True, padx=5)
+
+        # Auto-close in 3 seconds
+        dialog.after(3000, on_accept)
+
+        # Handle window close button (X)
+        dialog.protocol("WM_DELETE_WINDOW", on_accept)
+
+    except Exception as e:
+        logging.exception("Error in close progress dialog: %s", e)
 
 
 class JSONManagerApp:
@@ -1415,8 +1482,15 @@ class JSONManagerApp:
                 logging.exception("Execution failed")
                 raise e
             finally:
-                if loading_win:
-                    loading_win.destroy()
+
+                def cleanup() -> None:
+                    if loading_win:
+                        progress_win = getattr(loading_win, "progress_window", None)
+                        loading_win.destroy()
+                        if progress_win:
+                            _close_progress_dialog(progress_win)
+
+                self.root.after(0, cleanup)
 
         loading_win = _show_loading_modal(self.root, message=f"Executing Flow {foldername}: {filename_without_ext}...")
         threading.Thread(target=run_flow, args=(loading_win,)).start()

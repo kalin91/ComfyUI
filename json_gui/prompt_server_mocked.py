@@ -31,23 +31,29 @@ class MockServer:
         self.routes = self
         self.last_node_id = "mock_node_id"
 
-    def post(self, route):
-        def decorator(func):
+    def post(self, _route) -> callable:
+        """Mocked post decorator."""
+
+        def decorator(func) -> callable:
+            """Return the original function without modification."""
             return func
 
         return decorator
 
-    def get(self, route):
-        def decorator(func):
+    def get(self, _route) -> callable:
+        """Mocked get decorator."""
+
+        def decorator(func) -> callable:
+            """Return the original function without modification."""
             return func
 
         return decorator
 
-    def add_on_prompt_handler(self, handler):
-        pass
+    def add_on_prompt_handler(self, handler) -> None:
+        """Mocked add_on_prompt_handler method."""
 
-    def send_sync(self, event, data, sid=None):
-        pass
+    def send_sync(self, event, data, sid=None) -> None:
+        """Mocked send_sync method."""
 
 
 root = tk.Tk()
