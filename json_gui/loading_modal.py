@@ -251,3 +251,20 @@ def show_loading_modal(
     t.start()
     while t.is_alive():
         parent.after(100, parent.update())
+
+
+def auto_close_info(parent, title, message, timeout=5000) -> None:
+    """Show an info dialog that auto-closes after a timeout."""
+    win = tk.Toplevel(parent)
+    win.title(title)
+    win.geometry("300x120")
+    win.transient(parent)
+    win.grab_set()
+    label = ttk.Label(win, text=message, anchor="center", padding=20)
+    label.pack(expand=True, fill="both")
+    btn = ttk.Button(win, text="OK", command=win.destroy)
+    btn.pack(pady=(0, 10))
+    win.after(timeout, win.destroy)
+    win.protocol("WM_DELETE_WINDOW", win.destroy)
+    while win.winfo_exists():
+        parent.after(100, parent.update())

@@ -463,7 +463,7 @@ class JSONManagerApp:
                 json.dump(data, f, indent=2, ensure_ascii=False)
             self._mark_changes(False)
             self.status_var.set(f"Saved: {os.path.basename(self.current_file)}")
-            messagebox.showinfo("Success", "File saved successfully")
+            loading_modal.auto_close_info(self.root, "Success", "File saved successfully")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save file:\n{e}")
             logging.exception("Failed to save file %s", self.current_file)
