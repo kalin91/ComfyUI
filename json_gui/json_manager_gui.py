@@ -14,7 +14,7 @@ import yaml
 from PIL import Image, ImageTk
 import torch
 from app.logger import setup_logger
-from json_gui.json_tree_editor import JSONTreeEditor
+from json_gui.json_tree_editor import JSONTreeEditor, open_preview
 from json_gui.scroll_utils import bind_frame_scroll_events
 from json_gui import loading_modal, utils as gui_utils
 from comfy.cli_args import args
@@ -76,6 +76,11 @@ class ImageViewer(ttk.Frame):
 
                 name_label = ttk.Label(frame, text=os.path.basename(path), wraplength=400)
                 name_label.pack()
+
+                # if click frame, open image in default viewer
+                for widget in (frame, label, name_label):
+                    callback: Callable[[tk.Event], None] = lambda e, p=path, f=frame: open_preview(p, f)
+                    widget.bind("<Button-1>", callback)
 
             except Exception as e:
                 error_label = ttk.Label(self.scrollable_frame, text=f"Error loading {path}: {e}")

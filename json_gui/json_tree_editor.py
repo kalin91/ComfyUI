@@ -13,6 +13,42 @@ from json_gui.scroll_utils import bind_frame_scroll_events, bind_scroll_events
 from json_gui.constants import COMBO_CONSTANTS, JSON_CANVAS_NAME, JSON_SCROLL_FRAME_NAME
 
 
+def open_preview(file_path: str, frame: ttk.Widget) -> None:
+    """Open a floating preview window for the selected image."""
+    try:
+        try:
+            img = Image.open(file_path)
+        except Exception as e:
+            messagebox.showerror("Preview Error", f"Cannot open image:\n{e}")
+            return
+
+        parent_win = frame.winfo_toplevel()
+        win = tk.Toplevel(parent_win)
+        win.title(f"Preview - {os.path.basename(file_path)}")
+        win.transient(parent_win)
+        win.resizable(True, True)
+
+        # Compute max preview size relative to screen
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        max_w = min(int(sw * 0.7), 1600)
+        max_h = min(int(sh * 0.8), 1200)
+        try:
+            img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+        except Exception:
+            img.thumbnail((max_w, max_h))
+
+        photo = ImageTk.PhotoImage(img)
+        img_label = ttk.Label(win, image=photo)
+        img_label.image = photo  # Keep reference
+        img_label.pack(padx=12, pady=12)
+
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
+    except Exception as e:
+        logging.exception("Error opening preview window: %s", e)
+        messagebox.showerror("Preview Error", f"Error opening preview:\n{e}")
+
+
 def _create_string_entry(
     frame: ttk.Widget,
     key: str,
@@ -60,42 +96,11 @@ def _create_open_preview_handler(p_combo: ttk.Combobox, p_folder: str, p_frame: 
 
     def _open_preview(folder=p_folder, combo=p_combo, frame=p_frame) -> None:
         """Open a floating preview window for the selected image."""
-        try:
-            path = os.path.join(folder, combo.get())
-            if not path:
-                messagebox.showwarning("Preview", "Select a file to preview")
-                return
-            try:
-                img = Image.open(path)
-            except Exception as e:
-                messagebox.showerror("Preview Error", f"Cannot open image:\n{e}")
-                return
-
-            parent_win = frame.winfo_toplevel()
-            win = tk.Toplevel(parent_win)
-            win.title(f"Preview - {os.path.basename(path)}")
-            win.transient(parent_win)
-            win.resizable(True, True)
-
-            # Compute max preview size relative to screen
-            sw = win.winfo_screenwidth()
-            sh = win.winfo_screenheight()
-            max_w = min(int(sw * 0.7), 1600)
-            max_h = min(int(sh * 0.8), 1200)
-            try:
-                img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-            except Exception:
-                img.thumbnail((max_w, max_h))
-
-            photo = ImageTk.PhotoImage(img)
-            img_label = ttk.Label(win, image=photo)
-            img_label.image = photo  # Keep reference
-            img_label.pack(padx=12, pady=12)
-
-            ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
-        except Exception as e:
-            logging.exception("Error opening preview window: %s", e)
-            messagebox.showerror("Preview Error", f"Error opening preview:\n{e}")
+        path = os.path.join(folder, combo.get())
+        if not path:
+            messagebox.showwarning("Preview", "Select a file to preview")
+            return
+        open_preview(path, frame)
 
     return _open_preview
 
