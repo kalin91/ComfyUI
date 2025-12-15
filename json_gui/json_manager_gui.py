@@ -303,6 +303,7 @@ class JSONManagerApp:
         assert foldername, "Folder name is empty"
         try:
             look_path = os.path.join(gui_utils.get_main_images_path(), foldername)
+            logging.debug("Refreshing JSON file list in folder: %s", look_path)
             files = [f for f in os.listdir(look_path) if f.endswith(".json")]
             files.sort()
             self.file_combo["values"] = files
