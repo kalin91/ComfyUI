@@ -1,5 +1,6 @@
 """GUI Application for managing JSON configuration files."""
 
+import sys
 import importlib
 import inspect
 import json
@@ -38,6 +39,103 @@ COMBO_CONSTANTS = {
     "scheduler_handlers": list(SCHEDULER_HANDLERS) + ADDITIONAL_SCHEDULERS,
     "sam_detection_hint": FaceDetailer.INPUT_TYPES()["required"]["sam_detection_hint"][0],
 }
+
+
+class TkTextWriter:
+    """Writer that outputs to a Tkinter text widget."""
+
+    def __init__(self, text_widget):
+        self.text_widget = text_widget
+
+    def write_to_widget(self, msg) -> None:
+        """Write message to the text widget in a thread-safe manner."""
+        if not msg:
+            return
+
+        def append() -> None:
+            """
+            Append message to text widget.
+            It handles both normal messages and tqdm-style progress updates.
+            """
+
+            if not self.text_widget.winfo_exists():
+                return
+
+            self.text_widget.configure(state="normal")
+            if '\r' in msg:
+                chunks = msg.split('\r')
+                self.text_widget.insert(tk.END, chunks[0])
+                for chunk in chunks[1:]:
+                    self.text_widget.delete("end-1c linestart", "end-1c")
+                    self.text_widget.insert(tk.END, chunk)
+            else:
+                self.text_widget.insert(tk.END, msg)
+            self.text_widget.see(tk.END)
+            self.text_widget.configure(state="disabled")
+
+        try:
+            self.text_widget.after(0, append)
+        except tk.TclError:
+            pass
+
+
+class TkTextHandler(logging.Handler):
+    """Logging handler that writes to TkTextWriter."""
+
+    def __init__(self, writer):
+        super().__init__()
+        self.writer = writer
+
+    def emit(self, record) -> None:
+        """Emit a log record to the TkTextWriter."""
+        msg = self.format(record) + "\n"
+        self.writer.write_to_widget(msg)
+
+
+class TextRedirector:
+    """Redirect stdout/stderr to TkTextWriter and original streams."""
+
+    def __init__(self, writer, *orig_streams):
+        self.writer = writer
+        self.orig_streams = orig_streams
+
+    def write(self, s) -> None:
+        """Write to original streams and TkTextWriter."""
+        for stream in self.orig_streams:
+            stream.write(s)
+        self.writer.write_to_widget(s)
+
+    def flush(self) -> None:
+        """Flush original streams."""
+        for stream in self.orig_streams:
+            stream.flush()
+
+    def __getattr__(self, name) -> Any:
+        """Delegate attribute access to the first original stream."""
+        return getattr(self.orig_streams[0], name)
+
+
+def show_progress_window() -> tk.Toplevel:
+    """Show a progress window with logging output redirected to it."""
+    win = tk.Toplevel()
+    win.title("Progreso")
+
+    text = tk.Text(win, height=15, width=80, state="disabled")
+    text.pack(fill="both", expand=True)
+
+    writer = TkTextWriter(text)
+
+    # ---- logging ----
+    handler = TkTextHandler(writer)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.INFO)
+
+    # ---- stdout / stderr ----
+    sys.stdout = TextRedirector(writer, sys.__stdout__)
+    sys.stderr = TextRedirector(writer, sys.__stderr__)
+
+    return win
 
 
 # Bind scroll events to prevent propagation to parent canvas
@@ -541,6 +639,7 @@ def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
         x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
         text_widget.configure(xscrollcommand=x_scroll.set)
         x_scroll.pack(side="bottom", fill="x")
+        show_progress_window()
         return loading_win
     except Exception as e:
         logging.exception("Error showing loading modal: %s", e)
