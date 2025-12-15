@@ -41,7 +41,7 @@ COMBO_CONSTANTS = {
 
 
 # Bind scroll events to prevent propagation to parent canvas
-def _on_text_mousewheel(widget: tk.YView, event: tk.Event) -> str:
+def _on_mousewheel(widget: tk.YView, event: tk.Event) -> str:
     """Handle mousewheel in text widget without propagating to parent."""
     try:
         if event.num == 4:
@@ -56,7 +56,7 @@ def _on_text_mousewheel(widget: tk.YView, event: tk.Event) -> str:
         raise e
 
 
-def _on_text_shift_mousewheel(widget: tk.XView, event: tk.Event) -> str:
+def _on_shift_mousewheel(widget: tk.XView, event: tk.Event) -> str:
     """Handle horizontal mousewheel in text widget."""
     try:
         if event.num == 4:
@@ -80,8 +80,8 @@ def _bind_scroll_events(widget: tk.Widget, bind_all: bool = False) -> None:
         if not bind_all:
             _unbind_scroll_events(widget, True)
 
-        on_wheel: Callable[[tk.Event], str] = lambda event: _on_text_mousewheel(widget, event)
-        on_shift_wheel: Callable[[tk.Event], str] = lambda event: _on_text_shift_mousewheel(widget, event)
+        on_wheel: Callable[[tk.Event], str] = lambda event: _on_mousewheel(widget, event)
+        on_shift_wheel: Callable[[tk.Event], str] = lambda event: _on_shift_mousewheel(widget, event)
         if isinstance(widget, tk.YView):
             # Windows/MacOS
             bind_call("<MouseWheel>", on_wheel)
@@ -583,8 +583,8 @@ class JSONTreeEditor(ttk.Frame):
         self.scrollbar.pack(side="right", fill="y")
         self.h_scrollbar.pack(side="bottom", fill="x")
 
-        # Bind mousewheel only when mouse is over this widget (not bind_all)
-        _bind_frame_scroll_events(self.scrollable_frame, self.canvas, True)
+        # Bind mousewheel only when mouse is over this widget
+        _bind_frame_scroll_events(self, self.canvas, True)
 
     def load_data(self, data: dict[str, Any], body: dict[str, Any]) -> None:
         """Load JSON data into the editor."""
@@ -851,7 +851,7 @@ class ImageViewer(ttk.Frame):
         self.canvas.pack(side="left", fill="both", expand=True)
 
         # Bind mousewheel only when mouse is over this widget
-        _bind_frame_scroll_events(self.scrollable_frame, self.canvas, True)
+        _bind_frame_scroll_events(self, self.canvas, True)
 
     def display_images(self, image_paths: list[str]) -> None:
         """Display images from file paths."""
