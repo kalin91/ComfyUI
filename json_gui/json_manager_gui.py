@@ -29,12 +29,112 @@ if logger.hasHandlers():
 
 setup_logger(log_level=args.verbose, use_stdout=args.log_stdout)
 
+JSON_CANVAS_NAME = "json_canvas"
+JSON_SCROLL_FRAME_NAME = "json_scrollable_frame"
+
 COMBO_CONSTANTS = {
     "sampler_names": SAMPLER_NAMES,
     "scheduler_names": SCHEDULER_NAMES,
     "scheduler_handlers": list(SCHEDULER_HANDLERS) + ADDITIONAL_SCHEDULERS,
     "sam_detection_hint": FaceDetailer.INPUT_TYPES()["required"]["sam_detection_hint"][0],
 }
+
+
+# Bind scroll events to prevent propagation to parent canvas
+def _on_text_mousewheel(widget: tk.YView, event: tk.Event) -> str:
+    """Handle mousewheel in text widget without propagating to parent."""
+    try:
+        if event.num == 4:
+            widget.yview_scroll(-1, "units")
+        elif event.num == 5:
+            widget.yview_scroll(1, "units")
+        else:
+            widget.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"  # Prevent event propagation
+    except Exception as e:
+        logging.exception("Error handling mousewheel event: %s", e)
+        raise e
+
+
+def _on_text_shift_mousewheel(widget: tk.XView, event: tk.Event) -> str:
+    """Handle horizontal mousewheel in text widget."""
+    try:
+        if event.num == 4:
+            widget.xview_scroll(-1, "units")
+        elif event.num == 5:
+            widget.xview_scroll(1, "units")
+        else:
+            widget.xview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"  # Prevent event propagation
+    except Exception as e:
+        logging.exception("Error handling shift mousewheel event: %s", e)
+        raise e
+
+
+def _bind_scroll_events(widget: tk.Widget, bind_all: bool = False) -> None:
+    """Bind scroll events to a widget so scrolling works when hovering over it."""
+
+    try:
+        bind_call: Callable[[str, Callable[[tk.Event], str]], None] = widget.bind_all if bind_all else widget.bind
+
+        if not bind_all:
+            _unbind_scroll_events(widget, True)
+
+        on_wheel: Callable[[tk.Event], str] = lambda event: _on_text_mousewheel(widget, event)
+        on_shift_wheel: Callable[[tk.Event], str] = lambda event: _on_text_shift_mousewheel(widget, event)
+        if isinstance(widget, tk.YView):
+            # Windows/MacOS
+            bind_call("<MouseWheel>", on_wheel)
+            # Linux scroll up/down
+            bind_call("<Button-4>", on_wheel)
+            bind_call("<Button-5>", on_wheel)
+        if isinstance(widget, tk.XView):
+            # Shift+scroll for horizontal (Windows/MacOS)
+            bind_call("<Shift-MouseWheel>", on_shift_wheel)
+            # Linux horizontal scroll
+            bind_call("<Shift-Button-4>", on_shift_wheel)
+            bind_call("<Shift-Button-5>", on_shift_wheel)
+    except Exception as e:
+        logging.exception("Error binding scroll events: %s", e)
+        raise e
+
+
+def _unbind_scroll_events(widget: tk.Widget, unbind_all: bool = False) -> None:
+    """Unbind mousewheel events when mouse leaves the scroll area."""
+    try:
+        unbind_call: Callable[[str], None] = widget.unbind_all if unbind_all else widget.unbind
+
+        # Windows/MacOS
+        unbind_call("<MouseWheel>")
+        # Linux scroll up/down
+        unbind_call("<Button-4>")
+        unbind_call("<Button-5>")
+        # Shift+scroll for horizontal (Windows/MacOS)
+        unbind_call("<Shift-MouseWheel>")
+        # Linux horizontal scroll
+        unbind_call("<Shift-Button-4>")
+        unbind_call("<Shift-Button-5>")
+
+        if not unbind_all:
+            canvas_str_pos: int = widget.winfo_parent().rfind(JSON_CANVAS_NAME)
+            canvas_name: str = widget.winfo_parent()[0:canvas_str_pos] + JSON_CANVAS_NAME
+            canvas: tk.Widget = widget.nametowidget(canvas_name)
+            _bind_scroll_events(canvas, True)
+    except Exception as e:
+        logging.exception("Error unbinding scroll events: %s", e)
+        raise e
+
+
+def _bind_frame_scroll_events(hover_widget: tk.Widget, event_target: tk.Widget, bind_all: bool = False) -> None:
+    """Bind scroll events to a widget so scrolling works when hovering over it."""
+    try:
+        enter_call: Callable[[tk.Event], None] = lambda event: _bind_scroll_events(event_target, bind_all)
+        leave_call: Callable[[tk.Event], None] = lambda event: _unbind_scroll_events(event_target, bind_all)
+        hover_widget.bind("<Enter>", enter_call)
+        hover_widget.bind("<Leave>", leave_call)
+    except Exception as e:
+        logging.exception("Error binding scroll frame events: %s", e)
+        raise e
 
 
 def _create_string_entry(
@@ -46,12 +146,15 @@ def _create_string_entry(
     string_entries: dict[str, tk.Entry],
 ) -> None:
     """Create a string entry widget."""
-    entry = ttk.Entry(frame, width=60)
-    entry.insert(0, str(value))
-    entry.bind("<KeyRelease>", lambda e: notify_change())
-    entry.pack(side="left", padx=5, fill="x", expand=True)
-    assert isinstance(value, str), f"Value for key '{key}' must be a string"
-    string_entries[full_key] = entry
+    try:
+        entry = ttk.Entry(frame, width=60)
+        entry.insert(0, str(value))
+        entry.bind("<KeyRelease>", lambda e: notify_change())
+        entry.pack(side="left", padx=5, fill="x", expand=True)
+        assert isinstance(value, str), f"Value for key '{key}' must be a string"
+        string_entries[full_key] = entry
+    except Exception as e:
+        logging.exception("Error creating string entry for key '%s': %s", key, e)
 
 
 def _create_boolean_entry(
@@ -64,12 +167,16 @@ def _create_boolean_entry(
 ) -> None:
     """Create a boolean entry widget."""
     assert isinstance(value, bool), f"Value for key '{key}' must be a bool in list item '{key}'"
-    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-    label.pack(side="left")
-    var = tk.BooleanVar(value=value)
-    check = ttk.Checkbutton(frame, variable=var, command=notify_change)
-    check.pack(side="left", padx=5)
-    boolean_vars[full_key] = var
+    try:
+        label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+        label.pack(side="left")
+        var = tk.BooleanVar(value=value)
+        check = ttk.Checkbutton(frame, variable=var, command=notify_change)
+        check.pack(side="left", padx=5)
+        boolean_vars[full_key] = var
+    except Exception as e:
+        logging.exception("Error creating boolean entry for key '%s': %s", key, e)
+        raise e
 
 
 def _create_open_preview_handler(p_combo: ttk.Combobox, p_folder: str, p_frame: ttk.Widget) -> Callable[[], None]:
@@ -77,38 +184,42 @@ def _create_open_preview_handler(p_combo: ttk.Combobox, p_folder: str, p_frame: 
 
     def _open_preview(folder=p_folder, combo=p_combo, frame=p_frame) -> None:
         """Open a floating preview window for the selected image."""
-        path = os.path.join(folder, combo.get())
-        if not path:
-            messagebox.showwarning("Preview", "Select a file to preview")
-            return
         try:
-            img = Image.open(path)
+            path = os.path.join(folder, combo.get())
+            if not path:
+                messagebox.showwarning("Preview", "Select a file to preview")
+                return
+            try:
+                img = Image.open(path)
+            except Exception as e:
+                messagebox.showerror("Preview Error", f"Cannot open image:\n{e}")
+                return
+
+            parent_win = frame.winfo_toplevel()
+            win = tk.Toplevel(parent_win)
+            win.title(f"Preview - {os.path.basename(path)}")
+            win.transient(parent_win)
+            win.resizable(True, True)
+
+            # Compute max preview size relative to screen
+            sw = win.winfo_screenwidth()
+            sh = win.winfo_screenheight()
+            max_w = min(int(sw * 0.7), 1600)
+            max_h = min(int(sh * 0.8), 1200)
+            try:
+                img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+            except Exception:
+                img.thumbnail((max_w, max_h))
+
+            photo = ImageTk.PhotoImage(img)
+            img_label = ttk.Label(win, image=photo)
+            img_label.image = photo  # Keep reference
+            img_label.pack(padx=12, pady=12)
+
+            ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
         except Exception as e:
-            messagebox.showerror("Preview Error", f"Cannot open image:\n{e}")
-            return
-
-        parent_win = frame.winfo_toplevel()
-        win = tk.Toplevel(parent_win)
-        win.title(f"Preview - {os.path.basename(path)}")
-        win.transient(parent_win)
-        win.resizable(True, True)
-
-        # Compute max preview size relative to screen
-        sw = win.winfo_screenwidth()
-        sh = win.winfo_screenheight()
-        max_w = min(int(sw * 0.7), 1600)
-        max_h = min(int(sh * 0.8), 1200)
-        try:
-            img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-        except Exception:
-            img.thumbnail((max_w, max_h))
-
-        photo = ImageTk.PhotoImage(img)
-        img_label = ttk.Label(win, image=photo)
-        img_label.image = photo  # Keep reference
-        img_label.pack(padx=12, pady=12)
-
-        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
+            logging.exception("Error opening preview window: %s", e)
+            messagebox.showerror("Preview Error", f"Error opening preview:\n{e}")
 
     return _open_preview
 
@@ -123,28 +234,36 @@ def _create_file_entry(
     file_entries: dict[str, ttk.Combobox],
 ) -> None:
     """Create a file entry widget."""
-    assert isinstance(value, str), f"Value for key '{key}' must be a string"
-    assert "parent" in body[key], f"'parent' not specified for file type key '{key}' in body"
-    body_parent = body[key]["parent"]
-    assert isinstance(body_parent, str), f"'parent' for file type key '{key}' must be a string"
-    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-    label.pack(side="left")
-    combo = ttk.Combobox(frame, width=57, state="readonly")
-    files: list[str]
-    folder: str
-    combo.bind("<<ComboboxSelected>>", lambda e: notify_change())
-    combo.pack(side="left", padx=5, fill="x", expand=True)
-    if body_parent == "input":
-        files, folder = gui_utils.get_input_files_recursive()
-        ttk.Button(frame, text="Preview", command=_create_open_preview_handler(combo, folder, frame)).pack(
-            side="left", padx=(5, 5)
-        )
-    else:
-        files, folder = gui_utils.get_folder_files_recursive(body_parent)
-    combo["values"] = files
-    if value in files:
-        combo.set(value)
-    file_entries[full_key] = combo
+    try:
+        assert isinstance(value, str), f"Value for key '{key}' must be a string"
+        assert "parent" in body[key], f"'parent' not specified for file type key '{key}' in body"
+        body_parent = body[key]["parent"]
+        assert isinstance(body_parent, str), f"'parent' for file type key '{key}' must be a string"
+        label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+        label.pack(side="left")
+        combo = ttk.Combobox(frame, width=57, state="readonly")
+        files: list[str]
+        folder: str
+        combo.bind("<<ComboboxSelected>>", lambda e: notify_change())
+
+        # Bind mousewheel directly to text widget (not bind_all)
+        _bind_frame_scroll_events(combo, combo)
+
+        combo.pack(side="left", padx=5, fill="x", expand=True)
+        if body_parent == "input":
+            files, folder = gui_utils.get_input_files_recursive()
+            ttk.Button(frame, text="Preview", command=_create_open_preview_handler(combo, folder, frame)).pack(
+                side="left", padx=(5, 5)
+            )
+        else:
+            files, folder = gui_utils.get_folder_files_recursive(body_parent)
+        combo["values"] = files
+        if value in files:
+            combo.set(value)
+        file_entries[full_key] = combo
+    except Exception as e:
+        logging.exception("Error creating file entry for key '%s': %s", key, e)
+        raise e
 
 
 def _create_combo_entry(
@@ -157,27 +276,35 @@ def _create_combo_entry(
     combo_entries: dict[str, ttk.Combobox],
 ) -> None:
     """Create a combo entry widget."""
-    assert isinstance(value, str), f"Value for key '{key}' must be a string"
-    assert (
-        "constant" in body[key] or "values" in body[key]
-    ), f"'constant' or 'values' not specified for combo type key '{key}' in body"
-    combo_values: list[str]
-    if "values" in body[key]:
-        combo_values = body[key]["values"]
-    else:
-        assert body[key]["constant"] in COMBO_CONSTANTS, (
-            f"Constant '{body[key]['constant']}' not found " f"in constants dictionary for combo type key '{key}'"
-        )
-        combo_values = COMBO_CONSTANTS[body[key]["constant"]]
-    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-    label.pack(side="left")
-    combo = ttk.Combobox(frame, width=57, state="readonly")
-    combo["values"] = combo_values
-    if value in combo_values:
-        combo.set(value)
-    combo.bind("<<ComboboxSelected>>", lambda e: notify_change())
-    combo.pack(side="left", padx=5, fill="x", expand=True)
-    combo_entries[full_key] = combo
+    try:
+        assert isinstance(value, str), f"Value for key '{key}' must be a string"
+        assert (
+            "constant" in body[key] or "values" in body[key]
+        ), f"'constant' or 'values' not specified for combo type key '{key}' in body"
+        combo_values: list[str]
+        if "values" in body[key]:
+            combo_values = body[key]["values"]
+        else:
+            assert body[key]["constant"] in COMBO_CONSTANTS, (
+                f"Constant '{body[key]['constant']}' not found " f"in constants dictionary for combo type key '{key}'"
+            )
+            combo_values = COMBO_CONSTANTS[body[key]["constant"]]
+        label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+        label.pack(side="left")
+        combo = ttk.Combobox(frame, width=57, state="readonly")
+        combo["values"] = combo_values
+        if value in combo_values:
+            combo.set(value)
+        combo.bind("<<ComboboxSelected>>", lambda e: notify_change())
+
+        # Bind mousewheel directly to text widget (not bind_all)
+        _bind_frame_scroll_events(combo, combo)
+
+        combo.pack(side="left", padx=5, fill="x", expand=True)
+        combo_entries[full_key] = combo
+    except Exception as e:
+        logging.exception("Error creating combo entry for key '%s': %s", key, e)
+        raise e
 
 
 def _create_multiline_text_widget(
@@ -191,25 +318,32 @@ def _create_multiline_text_widget(
     text_entries: dict[str, tk.Text],
 ) -> None:
     """Create a multiline text widget."""
-    assert isinstance(value, str), f"Value for key '{key}' must be a string"
-    # Multiline text box for positive/negative prompts
-    label = ttk.Label(frame, text=f"{key}:", font=("TkDefaultFont", 10, "bold"))
-    label.pack(anchor="w")
+    try:
+        assert isinstance(value, str), f"Value for key '{key}' must be a string"
+        # Multiline text box for positive/negative prompts
+        label = ttk.Label(frame, text=f"{key}:", font=("TkDefaultFont", 10, "bold"))
+        label.pack(anchor="w")
 
-    text_frame = ttk.Frame(parent)
-    text_frame.pack(fill="x", padx=(indent * 20 + 10, 5), pady=5)
+        text_frame = ttk.Frame(parent)
+        text_frame.pack(fill="x", padx=(indent * 20 + 10, 5), pady=5)
 
-    text_widget = tk.Text(text_frame, height=8, width=80, wrap="word")
-    text_scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
-    text_widget.configure(yscrollcommand=text_scrollbar.set)
+        text_widget = tk.Text(text_frame, height=8, width=80, wrap="word")
+        text_scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
+        text_widget.configure(yscrollcommand=text_scrollbar.set)
 
-    text_widget.insert("1.0", str(value))
-    text_widget.bind("<<Modified>>", on_text_modified)
+        text_widget.insert("1.0", str(value))
+        text_widget.bind("<<Modified>>", on_text_modified)
 
-    text_widget.pack(side="left", fill="both", expand=True)
-    text_scrollbar.pack(side="right", fill="y")
+        # Bind mousewheel directly to text widget (not bind_all)
+        _bind_scroll_events(text_widget)
 
-    text_entries[full_key] = text_widget
+        text_widget.pack(side="left", fill="both", expand=True)
+        text_scrollbar.pack(side="right", fill="y")
+
+        text_entries[full_key] = text_widget
+    except Exception as e:
+        logging.exception("Error creating multiline text widget for key '%s': %s", key, e)
+        raise e
 
 
 def _create_number_validator(
@@ -274,15 +408,20 @@ def _create_on_invalid_handler(
         b_type=body_type, p_min=min_val, p_max=max_val, p_format=format_str, on_change=notify_change
     ) -> None:
         """Handle invalid input."""
-        max_decimals = 0 if b_type == "int" else int(p_format.replace("f", "").split(".")[-1])
-        messagebox.showwarning(
-            "Invalid Input",
-            (
-                f"Please enter a valid {b_type} between {p_min} and "
-                f"{p_max} with up to {max_decimals} decimal places."
-            ),
-        )
-        on_change()
+        try:
+            max_decimals = 0 if b_type == "int" else int(p_format.replace("f", "").split(".")[-1])
+            messagebox.showwarning(
+                "Invalid Input",
+                (
+                    f"Please enter a valid {b_type} between {p_min} and "
+                    f"{p_max} with up to {max_decimals} decimal places."
+                ),
+            )
+            on_change()
+        except Exception as e:
+            logging.exception("Error handling invalid input: %s", e)
+            on_change()
+            raise e
 
     return on_invalid
 
@@ -299,13 +438,17 @@ def _create_randomize_handler(
 
     def set_random(e=entry, mn=min_val, mx=max_val, fmt=format_str, bt=body_type, on_change=notify_change) -> None:
         """Set a random value in the entry."""
-        on_change()
-        if bt == "int":
-            val = random.randint(int(mn), int(mx))
-            e.set(val)
-        else:
-            val = random.uniform(float(mn), float(mx))
-            e.set(fmt % val)
+        try:
+            on_change()
+            if bt == "int":
+                val = random.randint(int(mn), int(mx))
+                e.set(val)
+            else:
+                val = random.uniform(float(mn), float(mx))
+                e.set(fmt % val)
+        except Exception as ex:
+            logging.exception("Error setting random value")
+            raise ex
 
     return set_random
 
@@ -323,73 +466,85 @@ def _create_numeric_entry(
     float_entries: dict[str, tk.Entry],
 ) -> None:
     """Create a numeric entry widget."""
-    type_val: type = int if body_type == "int" else float
-    min_val: float = body[key].get("min", -999999999999999)
-    max_val: float = body[key].get("max", 999999999999999)
-    format_str: str = "%.0f" if body_type == "int" else body[key].get("format", "%.1f")
-    last_val: tuple[list[Any], list[ttk.Spinbox]] = ([value], [])
+    try:
+        type_val: type = int if body_type == "int" else float
+        min_val: float = body[key].get("min", -999999999999999)
+        max_val: float = body[key].get("max", 999999999999999)
+        format_str: str = "%.0f" if body_type == "int" else body[key].get("format", "%.1f")
+        last_val: tuple[list[Any], list[ttk.Spinbox]] = ([value], [])
 
-    entry = ttk.Spinbox(
-        frame,
-        from_=min_val,
-        to=max_val,
-        increment=body[key].get("step", 1.0),
-        width=25,
-        wrap=True,
-        format=format_str,
-        command=notify_change,
-        validate="focusout",
-        validatecommand=(
-            register_call(_create_number_validator(min_val, max_val, type_val, last_val, format_str)),
-            "%P",
-        ),
-        invalidcommand=(
-            register_call(_create_on_invalid_handler(body_type, min_val, max_val, format_str, notify_change)),
-        ),
-    )
-    entry.set(type_val(value))
-    last_val[1].append(entry)
-    entry.bind("<KeyRelease>", lambda e: notify_change())
-    entry.pack(side="left", padx=(0, 5))
-    if body[key].get("randomizable", False):
-        entry.config(foreground="blue")
-        ttk.Button(
+        entry = ttk.Spinbox(
             frame,
-            text="Random",
-            command=_create_randomize_handler(entry, min_val, max_val, format_str, body_type, notify_change),
-        ).pack(side="left", padx=(0, 5))
+            from_=min_val,
+            to=max_val,
+            increment=body[key].get("step", 1.0),
+            width=25,
+            wrap=True,
+            format=format_str,
+            command=notify_change,
+            validate="focusout",
+            validatecommand=(
+                register_call(_create_number_validator(min_val, max_val, type_val, last_val, format_str)),
+                "%P",
+            ),
+            invalidcommand=(
+                register_call(_create_on_invalid_handler(body_type, min_val, max_val, format_str, notify_change)),
+            ),
+        )
+        entry.set(type_val(value))
+        last_val[1].append(entry)
+        entry.bind("<KeyRelease>", lambda e: notify_change())
 
-        assert isinstance(type_val(value), type_val), f"Value for key '{key}' must be an {body_type}"
-    if body_type == "int":
-        int_entries[full_key] = entry
-    elif body_type == "float":
-        float_entries[full_key] = entry
+        # Bind mousewheel directly to text widget (not bind_all)
+        _bind_frame_scroll_events(entry, entry)
+
+        entry.pack(side="left", padx=(0, 5))
+        if body[key].get("randomizable", False):
+            entry.config(foreground="blue")
+            ttk.Button(
+                frame,
+                text="Random",
+                command=_create_randomize_handler(entry, min_val, max_val, format_str, body_type, notify_change),
+            ).pack(side="left", padx=(0, 5))
+
+            assert isinstance(type_val(value), type_val), f"Value for key '{key}' must be an {body_type}"
+        if body_type == "int":
+            int_entries[full_key] = entry
+        elif body_type == "float":
+            float_entries[full_key] = entry
+    except Exception as e:
+        logging.exception("Error creating numeric entry for key '%s': %s", key, e)
+        raise e
 
 
 def _show_loading_modal(parent, message="Loading...") -> tk.Toplevel:
     """Show a modal loading window."""
-    loading_win = tk.Toplevel(parent)
-    loading_win.title("")
-    loading_win.geometry("250x80")
-    loading_win.transient(parent)
-    loading_win.grab_set()  # Hace la ventana modal
-    loading_win.resizable(False, False)
-    loading_win.protocol("WM_DELETE_WINDOW", lambda: None)  # Deshabilita cerrar
+    try:
+        loading_win = tk.Toplevel(parent)
+        loading_win.title("")
+        loading_win.geometry("250x80")
+        loading_win.transient(parent)
+        loading_win.grab_set()  # Hace la ventana modal
+        loading_win.resizable(False, False)
+        loading_win.protocol("WM_DELETE_WINDOW", lambda: None)  # Deshabilita cerrar
 
-    # Frame for text and scrollbar
-    frame = ttk.Frame(loading_win)
-    frame.pack(fill="both", expand=True, padx=10, pady=10)
+        # Frame for text and scrollbar
+        frame = ttk.Frame(loading_win)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-    text_widget = tk.Text(frame, height=3, wrap="word")
-    text_widget.insert("1.0", message)
-    text_widget.config(state="disabled")
-    text_widget.pack(side="left", fill="both", expand=True)
+        text_widget = tk.Text(frame, height=3, wrap="word")
+        text_widget.insert("1.0", message)
+        text_widget.config(state="disabled")
+        text_widget.pack(side="left", fill="both", expand=True)
 
-    # Horizontal scrollbar
-    x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
-    text_widget.configure(xscrollcommand=x_scroll.set)
-    x_scroll.pack(side="bottom", fill="x")
-    return loading_win
+        # Horizontal scrollbar
+        x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
+        text_widget.configure(xscrollcommand=x_scroll.set)
+        x_scroll.pack(side="bottom", fill="x")
+        return loading_win
+    except Exception as e:
+        logging.exception("Error showing loading modal: %s", e)
+        raise e
 
 
 class JSONTreeEditor(ttk.Frame):
@@ -409,9 +564,9 @@ class JSONTreeEditor(ttk.Frame):
         self._on_change = on_change  # Callback when any value changes
 
         # Create canvas with scrollbar
-        self.canvas = tk.Canvas(self, highlightthickness=0)
+        self.canvas = tk.Canvas(self, highlightthickness=0, name=JSON_CANVAS_NAME)
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.scrollable_frame = ttk.Frame(self.canvas)
+        self.scrollable_frame = ttk.Frame(self.canvas, name=JSON_SCROLL_FRAME_NAME)
 
         self.scrollable_frame.bind(
             "<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -420,21 +575,16 @@ class JSONTreeEditor(ttk.Frame):
         self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
+        # Add horizontal scrollbar
+        self.h_scrollbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(xscrollcommand=self.h_scrollbar.set)
+
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
+        self.h_scrollbar.pack(side="bottom", fill="x")
 
-        # Bind mousewheel
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-        self.canvas.bind_all("<Button-4>", self._on_mousewheel)
-        self.canvas.bind_all("<Button-5>", self._on_mousewheel)
-
-    def _on_mousewheel(self, event: tk.Event) -> None:
-        if event.num == 4:
-            self.canvas.yview_scroll(-1, "units")
-        elif event.num == 5:
-            self.canvas.yview_scroll(1, "units")
-        else:
-            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        # Bind mousewheel only when mouse is over this widget (not bind_all)
+        _bind_frame_scroll_events(self.scrollable_frame, self.canvas, True)
 
     def load_data(self, data: dict[str, Any], body: dict[str, Any]) -> None:
         """Load JSON data into the editor."""
@@ -699,6 +849,9 @@ class ImageViewer(ttk.Frame):
         self.scrollbar_y.pack(side="right", fill="y")
         self.scrollbar_x.pack(side="bottom", fill="x")
         self.canvas.pack(side="left", fill="both", expand=True)
+
+        # Bind mousewheel only when mouse is over this widget
+        _bind_frame_scroll_events(self.scrollable_frame, self.canvas, True)
 
     def display_images(self, image_paths: list[str]) -> None:
         """Display images from file paths."""
