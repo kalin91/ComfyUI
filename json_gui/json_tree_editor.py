@@ -3,6 +3,8 @@
 import math
 import re
 import os
+import sys
+import subprocess
 import logging
 import tkinter as tk
 import random
@@ -117,6 +119,45 @@ def open_preview(file_path: str, frame: ttk.Widget) -> None:
 
         # Bind scroll events for panning (Shift+Scroll for horizontal)
         bind_frame_scroll_events(canvas, canvas)
+
+        def copy_to_clipboard(_event=None) -> str:
+            """Copy image to clipboard."""
+            try:
+                if sys.platform.startswith("linux"):
+                    try:
+                        subprocess.run(
+                            ["xclip", "-selection", "clipboard", "-t", "image/png", "-i", file_path], check=True
+                        )
+                        messagebox.showinfo("Info", "Image copied to clipboard")
+                        return "break"
+                    except FileNotFoundError:
+                        pass
+
+                    try:
+                        with open(file_path, "rb") as f:
+                            subprocess.run(["wl-copy"], input=f.read(), check=True)
+                        messagebox.showinfo("Info", "Image copied to clipboard")
+                        return "break"
+                    except FileNotFoundError:
+                        pass
+
+                    messagebox.showwarning("Warning", "Install xclip or wl-copy to copy images on Linux.")
+
+                elif sys.platform == "win32":
+                    safe_path = file_path.replace("'", "''")
+                    cmd = f"Set-Clipboard -Path '{safe_path}'"
+                    subprocess.run(["powershell", "-command", cmd], check=True)
+                    messagebox.showinfo("Info", "Image copied to clipboard")
+                    return "break"
+
+            except Exception as e:
+                logging.exception("Failed to copy to clipboard")
+                messagebox.showerror("Error", f"Failed to copy to clipboard:\n{e}")
+            return "break"
+
+        win.bind("<Control-c>", copy_to_clipboard)
+
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
     except Exception as e:
         logging.exception("Error opening preview window: %s", e)
         messagebox.showerror("Preview Error", f"Error opening preview:\n{e}")
