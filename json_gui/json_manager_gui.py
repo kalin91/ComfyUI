@@ -1,5 +1,6 @@
 """GUI Application for managing JSON configuration files."""
 
+import gc
 import importlib
 import inspect
 import json
@@ -13,6 +14,7 @@ from tkinter import ttk, messagebox, simpledialog
 import yaml
 from PIL import Image, ImageTk
 import torch
+import comfy.model_management
 from app.logger import setup_logger
 from json_gui.json_tree_editor import JSONTreeEditor, open_preview
 from json_gui.scroll_utils import bind_frame_scroll_events
@@ -561,6 +563,15 @@ class JSONManagerApp:
             except Exception as e:
                 self.status_var.set("Execution failed")
                 raise e
+            finally:
+                # Clean up VRAM to prevent OOM on repeated executions
+                comfy.model_management.unload_all_models()
+                comfy.model_management.soft_empty_cache()
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                logging.info("VRAM cleanup completed")
 
         loading_modal.show_loading_modal(
             self.root, run_flow, (), f"Executing Flow {foldername}: {filename_without_ext}...", True
