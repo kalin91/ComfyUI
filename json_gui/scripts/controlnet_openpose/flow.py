@@ -9,10 +9,7 @@ from PIL import Image
 import comfy.sd
 import comfy.sample
 import folder_paths
-
-
-from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer, SAMLoader
-from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
+from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer
 from json_gui.flow import Flow
 
 # Paths - User to replace these
@@ -153,18 +150,6 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
     # 10.5 FaceDetailer
     logging.info("Running FaceDetailer...")
 
-    # Load Models
-    bbox_model_name = "bbox/yolo11x_face_detect2.pt"
-    sam_model_name = "sam_vit_l_0b3195.pth"
-
-    bbox_provider = UltralyticsDetectorProvider()
-    # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
-    bbox_detector, _c = bbox_provider.doit(bbox_model_name)
-
-    sam_loader = SAMLoader()
-    # SAMLoader.load_model returns (SAM_MODEL,)
-    sam_model = sam_loader.load_model(sam_model_name)[0]
-
     face_detailer = FaceDetailer()
 
     # FaceDetailer.doit(image, model, clip, vae, guide_size, guide_size_for, max_size,
@@ -186,10 +171,8 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
             "vae": vae,
             "positive": cond_pos,
             "negative": cond_neg,
-            "sam_model_opt": sam_model,
             "segm_detector_opt": None,  # Not using segm detector here
             "detailer_hook": None,
-            "bbox_detector": bbox_detector,
         }
     )
 

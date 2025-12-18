@@ -251,7 +251,9 @@ def _create_file_entry(
                 side="left", padx=(5, 5)
             )
         else:
+            body_prefix = body[key].get("prefix", "")
             files, folder = gui_utils.get_folder_files_recursive(body_parent)
+            files = [f"{body_prefix}{f}" for f in files]
         combo["values"] = files
         if value in files:
             combo.set(value)

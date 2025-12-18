@@ -5,9 +5,13 @@ import logging
 from typing import Any
 import torch
 import numpy as np
+from segment_anything.build_sam import Sam
 import comfy.model_management
 from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.open_pose import OpenposeDetector
+from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
+from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader
+from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
 import folder_paths
 import node_helpers
 from PIL import Image, ImageOps, ImageSequence
@@ -266,6 +270,16 @@ class FaceDetailer(SimpleKSampler):
     """A class representing face detailer settings."""
 
     @property
+    def sam_model_opt(self) -> Sam:
+        """Returns the SAM model option."""
+        return self._sam_model_opt
+
+    @property
+    def bbox_detector(self) -> subcore.UltraBBoxDetector:
+        """Returns the batch size."""
+        return self._bbox_detector
+
+    @property
     def guide_size(self) -> int:
         """Returns the guide size."""
         return self._guide_size
@@ -299,16 +313,6 @@ class FaceDetailer(SimpleKSampler):
     def drop_size(self) -> int:
         """Returns the drop size."""
         return self._drop_size
-
-    #    @property
-    #    def refiner_ratio(self) -> float:
-    #        """Returns the refiner ratio."""
-    #        return self._refiner_ratio
-
-    #    @property
-    #    def batch_size(self) -> int:
-    #        """Returns the batch size."""
-    #        return self._batch_size
 
     @property
     def cycle(self) -> int:
@@ -370,6 +374,8 @@ class FaceDetailer(SimpleKSampler):
         base_dict = super().to_dict()
         base_dict.update(
             {
+                "sam_model_opt": self._sam_model_opt,
+                "bbox_detector": self._bbox_detector,
                 "guide_size": self._guide_size,
                 "guide_size_for": self._guide_size_for,
                 "max_size": self._max_size,
@@ -377,8 +383,6 @@ class FaceDetailer(SimpleKSampler):
                 "noise_mask": self._noise_mask,
                 "force_inpaint": self._force_inpaint,
                 "drop_size": self._drop_size,
-                # "refiner_ratio": self._refiner_ratio,
-                # "batch_size": self._batch_size,
                 "cycle": self._cycle,
                 "bbox_threshold": self._bbox_threshold,
                 "bbox_dilation": self._bbox_dilation,
@@ -421,6 +425,8 @@ class FaceDetailer(SimpleKSampler):
         sam_bbox_expansion: int,
         sam_mask_hint_threshold: float,
         sam_mask_hint_use_negative: str,
+        bbox_detector: str,
+        sam_model_opt: str,
         wildcard: str,
     ):
         super().__init__(seed, steps, cfg, sampler_name, scheduler, denoise)
@@ -431,8 +437,6 @@ class FaceDetailer(SimpleKSampler):
         self._noise_mask = noise_mask
         self._force_inpaint = force_inpaint
         self._drop_size = drop_size
-        #  self._refiner_ratio = refiner_ratio
-        #  self._batch_size = batch_size
         self._cycle = cycle
         self._bbox_threshold = bbox_threshold
         self._bbox_dilation = bbox_dilation
@@ -444,3 +448,10 @@ class FaceDetailer(SimpleKSampler):
         self._sam_mask_hint_threshold = sam_mask_hint_threshold
         self._sam_mask_hint_use_negative = sam_mask_hint_use_negative
         self._wildcard = wildcard
+        bbox_provider = UltralyticsDetectorProvider()
+        # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
+        self._bbox_detector, _c = bbox_provider.doit(bbox_detector)
+
+        sam_loader = SAMLoader()
+        # SAMLoader.load_model returns (SAM_MODEL,)
+        self._sam_model_opt = sam_loader.load_model(sam_model_opt)[0]
