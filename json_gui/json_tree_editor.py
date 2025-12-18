@@ -1,7 +1,10 @@
 """ "JSON Tree Editor GUI Component."""
 
+import math
 import re
 import os
+import sys
+import subprocess
 import logging
 import tkinter as tk
 import random
@@ -11,6 +14,153 @@ from PIL import Image, ImageTk
 import json_gui.utils as gui_utils
 from json_gui.scroll_utils import bind_frame_scroll_events, bind_scroll_events
 from json_gui.constants import COMBO_CONSTANTS, JSON_CANVAS_NAME, JSON_SCROLL_FRAME_NAME
+
+
+def open_preview(file_path: str, frame: ttk.Widget) -> None:
+    """Open a floating preview window for the selected image."""
+    try:
+        try:
+            img = Image.open(file_path)
+        except Exception as e:
+            messagebox.showerror("Preview Error", f"Cannot open image:\n{e}")
+            return
+
+        parent_win = frame.winfo_toplevel()
+        win = tk.Toplevel(parent_win)
+        win.title(f"Preview - {os.path.basename(file_path)}")
+        win.transient(parent_win)
+        win.resizable(True, True)
+
+        # Container for canvas and scrollbars
+        container = tk.Frame(win, background="blue")
+        win.update_idletasks()  # Asegura que la ventana esté dibujada
+        container.pack(fill="both", expand=True)
+
+        v_scroll = ttk.Scrollbar(container, orient="vertical")
+        h_scroll = ttk.Scrollbar(container, orient="horizontal")
+
+        # Compute max preview size relative to screen
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        max_w = int(sw * 0.9)
+        max_h = int(sh * 0.9)
+
+        img_w, img_h = img.size
+
+        # Calculate window size (image size + padding, clamped to max screen size)
+        scale_ratio: float = min(max_w / img_w, max_h / img_h, 1)
+        win_w = math.ceil((img_w * scale_ratio) + v_scroll.winfo_reqwidth())
+        win_h = math.ceil((img_h * scale_ratio) + h_scroll.winfo_reqheight())
+
+        win.geometry(f"{win_w}x{win_h}")
+
+        # Variables for zoom
+        original_img = img.copy()
+
+        if scale_ratio < 1.0:
+            new_w = math.floor(img_w * scale_ratio)
+            new_h = math.floor(img_h * scale_ratio)
+            try:
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            except Exception:
+                img = img.resize((new_w, new_h))
+
+        canvas = tk.Canvas(container, highlightthickness=0, yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+
+        v_scroll.config(command=canvas.yview)
+        h_scroll.config(command=canvas.xview)
+
+        v_scroll.pack(side="right", fill="y")
+        h_scroll.pack(side="bottom", fill="x")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        photo = ImageTk.PhotoImage(img)
+        image_item = canvas.create_image(0, 0, anchor="nw", image=photo)
+        canvas.image = photo  # Keep reference
+
+        # Set initial scrollregion
+        canvas.config(scrollregion=(0, 0, img.width, img.height))
+
+        def zoom(event) -> str:
+            """Zoom in or out on the image."""
+            nonlocal scale_ratio
+            if event.delta > 0 or event.num == 4:  # Zoom in
+                scale_ratio *= 1.1
+            elif event.delta < 0 or event.num == 5:  # Zoom out
+                scale_ratio /= 1.1
+
+            # Limit zoom
+            scale_ratio = max(0.1, min(scale_ratio, 5.0))
+
+            new_w = int(original_img.width * scale_ratio)
+            new_h = int(original_img.height * scale_ratio)
+
+            try:
+                resized = original_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            except Exception:
+                resized = original_img.resize((new_w, new_h))
+
+            new_photo = ImageTk.PhotoImage(resized)
+            canvas.itemconfig(image_item, image=new_photo)
+            canvas.image = new_photo
+            canvas.config(scrollregion=(0, 0, new_w, new_h))
+            return "break"
+
+        # Bind zoom events
+        # Bind to canvas specifically to override scroll bindings
+        canvas.bind("<Control-MouseWheel>", zoom)
+        canvas.bind("<Control-Button-4>", zoom)
+        canvas.bind("<Control-Button-5>", zoom)
+
+        # Also bind to window just in case focus is elsewhere
+        win.bind("<Control-MouseWheel>", zoom)  # Windows
+        win.bind("<Control-Button-4>", zoom)  # Linux scroll up
+        win.bind("<Control-Button-5>", zoom)  # Linux scroll down
+
+        # Bind scroll events for panning (Shift+Scroll for horizontal)
+        bind_frame_scroll_events(canvas, canvas)
+
+        def copy_to_clipboard(_event=None) -> str:
+            """Copy image to clipboard."""
+            try:
+                if sys.platform.startswith("linux"):
+                    try:
+                        subprocess.run(
+                            ["xclip", "-selection", "clipboard", "-t", "image/png", "-i", file_path], check=True
+                        )
+                        messagebox.showinfo("Info", "Image copied to clipboard")
+                        return "break"
+                    except FileNotFoundError:
+                        pass
+
+                    try:
+                        with open(file_path, "rb") as f:
+                            subprocess.run(["wl-copy"], input=f.read(), check=True)
+                        messagebox.showinfo("Info", "Image copied to clipboard")
+                        return "break"
+                    except FileNotFoundError:
+                        pass
+
+                    messagebox.showwarning("Warning", "Install xclip or wl-copy to copy images on Linux.")
+
+                elif sys.platform == "win32":
+                    safe_path = file_path.replace("'", "''")
+                    cmd = f"Set-Clipboard -Path '{safe_path}'"
+                    subprocess.run(["powershell", "-command", cmd], check=True)
+                    messagebox.showinfo("Info", "Image copied to clipboard")
+                    return "break"
+
+            except Exception as e:
+                logging.exception("Failed to copy to clipboard")
+                messagebox.showerror("Error", f"Failed to copy to clipboard:\n{e}")
+            return "break"
+
+        win.bind("<Control-c>", copy_to_clipboard)
+
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
+    except Exception as e:
+        logging.exception("Error opening preview window: %s", e)
+        messagebox.showerror("Preview Error", f"Error opening preview:\n{e}")
 
 
 def _create_string_entry(
@@ -60,42 +210,11 @@ def _create_open_preview_handler(p_combo: ttk.Combobox, p_folder: str, p_frame: 
 
     def _open_preview(folder=p_folder, combo=p_combo, frame=p_frame) -> None:
         """Open a floating preview window for the selected image."""
-        try:
-            path = os.path.join(folder, combo.get())
-            if not path:
-                messagebox.showwarning("Preview", "Select a file to preview")
-                return
-            try:
-                img = Image.open(path)
-            except Exception as e:
-                messagebox.showerror("Preview Error", f"Cannot open image:\n{e}")
-                return
-
-            parent_win = frame.winfo_toplevel()
-            win = tk.Toplevel(parent_win)
-            win.title(f"Preview - {os.path.basename(path)}")
-            win.transient(parent_win)
-            win.resizable(True, True)
-
-            # Compute max preview size relative to screen
-            sw = win.winfo_screenwidth()
-            sh = win.winfo_screenheight()
-            max_w = min(int(sw * 0.7), 1600)
-            max_h = min(int(sh * 0.8), 1200)
-            try:
-                img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-            except Exception:
-                img.thumbnail((max_w, max_h))
-
-            photo = ImageTk.PhotoImage(img)
-            img_label = ttk.Label(win, image=photo)
-            img_label.image = photo  # Keep reference
-            img_label.pack(padx=12, pady=12)
-
-            ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
-        except Exception as e:
-            logging.exception("Error opening preview window: %s", e)
-            messagebox.showerror("Preview Error", f"Error opening preview:\n{e}")
+        path = os.path.join(folder, combo.get())
+        if not path:
+            messagebox.showwarning("Preview", "Select a file to preview")
+            return
+        open_preview(path, frame)
 
     return _open_preview
 
@@ -132,7 +251,9 @@ def _create_file_entry(
                 side="left", padx=(5, 5)
             )
         else:
+            body_prefix = body[key].get("prefix", "")
             files, folder = gui_utils.get_folder_files_recursive(body_parent)
+            files = [f"{body_prefix}{f}" for f in files]
         combo["values"] = files
         if value in files:
             combo.set(value)

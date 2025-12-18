@@ -240,3 +240,12 @@ props:
       wildcard:
         type: string
         isArray: false
+      bbox_detector:
+        type: file
+        isArray: false
+        parent: ultralytics_bbox
+        prefix: "bbox/"
+      sam_model_opt:
+        type: file
+        isArray: false
+        parent: sams

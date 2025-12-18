@@ -1,5 +1,6 @@
 """GUI Application for managing JSON configuration files."""
 
+import gc
 import importlib
 import inspect
 import json
@@ -13,8 +14,9 @@ from tkinter import ttk, messagebox, simpledialog
 import yaml
 from PIL import Image, ImageTk
 import torch
+import comfy.model_management
 from app.logger import setup_logger
-from json_gui.json_tree_editor import JSONTreeEditor
+from json_gui.json_tree_editor import JSONTreeEditor, open_preview
 from json_gui.scroll_utils import bind_frame_scroll_events
 from json_gui import loading_modal, utils as gui_utils
 from comfy.cli_args import args
@@ -76,6 +78,11 @@ class ImageViewer(ttk.Frame):
 
                 name_label = ttk.Label(frame, text=os.path.basename(path), wraplength=400)
                 name_label.pack()
+
+                # if click frame, open image in default viewer
+                for widget in (frame, label, name_label):
+                    callback: Callable[[tk.Event], None] = lambda e, p=path, f=frame: open_preview(p, f)
+                    widget.bind("<Button-1>", callback)
 
             except Exception as e:
                 error_label = ttk.Label(self.scrollable_frame, text=f"Error loading {path}: {e}")
@@ -458,7 +465,7 @@ class JSONManagerApp:
                 json.dump(data, f, indent=2, ensure_ascii=False)
             self._mark_changes(False)
             self.status_var.set(f"Saved: {os.path.basename(self.current_file)}")
-            messagebox.showinfo("Success", "File saved successfully")
+            loading_modal.auto_close_info(self.root, "Success", "File saved successfully")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save file:\n{e}")
             logging.exception("Failed to save file %s", self.current_file)
@@ -556,6 +563,15 @@ class JSONManagerApp:
             except Exception as e:
                 self.status_var.set("Execution failed")
                 raise e
+            finally:
+                # Clean up VRAM to prevent OOM on repeated executions
+                comfy.model_management.unload_all_models()
+                comfy.model_management.soft_empty_cache()
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                logging.info("VRAM cleanup completed")
 
         loading_modal.show_loading_modal(
             self.root, run_flow, (), f"Executing Flow {foldername}: {filename_without_ext}...", True

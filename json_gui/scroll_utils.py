@@ -82,9 +82,10 @@ def _unbind_scroll_events(widget: tk.Widget, unbind_all: bool = False) -> None:
 
         if not unbind_all:
             canvas_str_pos: int = widget.winfo_parent().rfind(JSON_CANVAS_NAME)
-            canvas_name: str = widget.winfo_parent()[0:canvas_str_pos] + JSON_CANVAS_NAME
-            canvas: tk.Widget = widget.nametowidget(canvas_name)
-            bind_scroll_events(canvas, True)
+            if canvas_str_pos != -1:
+                canvas_name: str = widget.winfo_parent()[0:canvas_str_pos] + JSON_CANVAS_NAME
+                canvas: tk.Widget = widget.nametowidget(canvas_name)
+                bind_scroll_events(canvas, True)
     except Exception as e:
         logging.exception("Error unbinding scroll events: %s", e)
         raise e
