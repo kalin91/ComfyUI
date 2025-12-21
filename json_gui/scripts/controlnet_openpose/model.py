@@ -1,12 +1,12 @@
-""" Module defining the Flow class for loading and managing flow data from JSON files. """
+"""Module defining the Flow class for loading and managing flow data from JSON files."""
 
 import os
 import json
 import logging
-from json_gui.mimic_classes import OpenPosePose, ApplyControlNet, EmptyLatent, SimpleKSampler, FaceDetailer
+from json_gui.mimic_classes import OpenPosePose, ApplyControlNet, EmptyLatent, SimpleKSampler, FaceDetailer, Rotator
 
 
-class Flow:
+class Model:
     """Class representing a flow loaded from a JSON file.""" ""
 
     @property
@@ -44,6 +44,11 @@ class Flow:
         """Returns the FaceDetailer instance."""
         return self._face_detailer
 
+    @property
+    def rotator(self) -> Rotator:
+        """Returns the Rotator instance."""
+        return self._rotator
+
     def __init__(
         self,
         filepath: str,
@@ -61,3 +66,4 @@ class Flow:
         self._empty_latent = EmptyLatent(**json_props["empty_latent"])
         self._simple_k_sampler = [SimpleKSampler(**s) for s in json_props["simple_k_sampler"]]
         self._face_detailer = FaceDetailer(**json_props["face_detailer"])
+        self._rotator = Rotator(**json_props["rotator"])

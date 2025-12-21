@@ -2,7 +2,7 @@
 
 import os
 import logging
-from typing import Any
+from typing import Any, Callable
 import torch
 import numpy as np
 from segment_anything.build_sam import Sam
@@ -15,6 +15,7 @@ from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
 import folder_paths
 import node_helpers
 from PIL import Image, ImageOps, ImageSequence
+import torchvision.transforms.functional as TF
 
 
 class SimpleKSampler:
@@ -455,3 +456,47 @@ class FaceDetailer(SimpleKSampler):
         sam_loader = SAMLoader()
         # SAMLoader.load_model returns (SAM_MODEL,)
         self._sam_model_opt = sam_loader.load_model(sam_model_opt)[0]
+
+
+class Rotator:
+    """A class representing image rotation settings."""
+
+    @property
+    def angle(self) -> float:
+        """Returns the rotation angle."""
+        return self._angle
+
+    def __init__(self, angle: float):
+        self._angle = angle
+
+    def rotate_image(self, image: torch.Tensor, func: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
+        """Rotates the given image tensor by the specified angle."""
+
+        if self._angle == 0:
+            return func(image)
+
+        # getting original image size
+        shape = image.shape
+        logging.info("Original image shape: %s", shape)
+
+        # Rotate images 45 degrees before FaceDetailer
+        logging.info("Rotating images %s degrees for FaceDetailer...", self._angle)
+        # Convert BHWC to BCHW for rotation
+        images_for_rotation = image.movedim(-1, 1)
+        rotated_images = TF.rotate(images_for_rotation, self._angle, expand=True)
+        # Convert back to BHWC
+        rotated_images = rotated_images.movedim(1, -1)
+        pre_result: torch.Tensor = func(rotated_images)
+
+        # Rotate result back to original orientation
+        logging.info("Rotating results back to original orientation...")
+        result_for_rotation = pre_result.movedim(-1, 1)
+        unprocessed_image = TF.rotate(result_for_rotation, -self._angle, expand=True).movedim(1, -1)
+
+        # Crop to original size
+        _, h, w, _ = unprocessed_image.shape
+        top = (h - shape[1]) // 2
+        left = (w - shape[2]) // 2
+        rotated_image = unprocessed_image[:, top: top + shape[1], left: left + shape[2], :]
+
+        return rotated_image
