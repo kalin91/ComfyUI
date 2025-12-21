@@ -3,14 +3,14 @@
 import inspect
 import os
 import logging
-import numpy as np
-from PIL import Image
 
 import comfy.sd
 import comfy.sample
 import folder_paths
 from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer
 from json_gui.flow import Flow
+from json_gui.utils import save_image
+from comfy_extras.nodes_mask import MaskToImage
 
 # Paths - User to replace these
 CHECKPOINT_PATH = "sd3.5_medium.safetensors"
@@ -46,24 +46,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
     # Run preprocessor
     pose_image_tensor = flow.openpose_pose.tensor()
 
-    h: int = 0
-    pose_file_saved: bool = False
-    while not pose_file_saved and h < 40:
-        pose_filename = os.path.join(folder_paths.get_temp_directory(), f"{filename}_pose_preview_{h}.png")
-        if os.path.exists(pose_filename):
-            h += 1
-            continue  # Skip if already exists
-        img_np = 255.0 * pose_image_tensor[0].cpu().numpy()
-        img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
-        img_pil.save(pose_filename)
-        logging.info("Saved pose preview to %s", pose_filename)
-        pose_file_saved = True
-        created_images.append(pose_filename)
-        break
-    if not pose_file_saved:
-        raise RuntimeError("Failed to save pose preview after multiple attempts. clean up temp files.")
-    if len(created_images) >= steps:
-        return created_images
+    save_image(created_images, filename, pose_image_tensor, "pose", steps)
 
     # 6. Encode Prompts
     positive_prompt = flow.positive
@@ -125,27 +108,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
 
         logging.info("Final Image Shape: %s", images.shape)
 
-        j: int = 0
-        file_saved: bool = False
-        while not file_saved and j < 40:
-            for i, image in enumerate(images):
-                sampler_file_name = os.path.join(
-                    folder_paths.get_temp_directory(), f"{filename}_sampler_{sampler_idx}_{i}_{j}.png"
-                )
-                if os.path.exists(sampler_file_name):
-                    j += 1
-                    continue  # Skip if already exists
-                img_np = 255.0 * image.cpu().numpy()
-                img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
-                img_pil.save(sampler_file_name)
-                logging.info("Saved refiner output to %s", sampler_file_name)
-                file_saved = True
-                created_images.append(sampler_file_name)
-                break
-        if not file_saved:
-            raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")
-        if len(created_images) >= steps:
-            return created_images
+        save_image(created_images, filename, images, f"sampler-{sampler_idx}", steps)
 
     # 10.5 FaceDetailer
     logging.info("Running FaceDetailer...")
@@ -182,28 +145,15 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
         if key not in face_signature.parameters:
             raise ValueError(f"Unexpected argument '{key}' for FaceDetailer.doit")
 
-    result_images = face_detailer.doit(**face_arguments)[0]
+    result_images, cropped_images, cropped_alpha, mask = face_detailer.doit(**face_arguments)[:4]
 
-    # 11. Save Image
-    k: int = 0
-    output_file_saved: bool = False
-    while not output_file_saved and k < 40:
-        for i, image in enumerate(result_images):
-            output_file_name = os.path.join(folder_paths.get_output_directory(), f"{filename}_{i}_{k}.png")
-            if os.path.exists(output_file_name):
-                k += 1
-                continue  # Skip if already exists
-            img_np = 255.0 * image.cpu().numpy()
-            img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
-            img_pil.save(output_file_name)
-            logging.info("Saved refiner output to %s", output_file_name)
-            output_file_saved = True
-            created_images.append(output_file_name)
-            break
-    if not output_file_saved:
-        raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")
-    if len(created_images) >= steps:
-        return created_images
+    for idx, cropped in enumerate(cropped_images):
+        save_image(created_images, filename, cropped, f"face-cropped-{idx}", steps)
+    for idx, alpha in enumerate(cropped_alpha):
+        save_image(created_images, filename, alpha, f"face-alpha-{idx}", steps)
+    mask_img_tensor: tuple = MaskToImage().execute(mask).result[0]  # pylint: disable=E1136
+    save_image(created_images, filename, mask_img_tensor, "face-mask", steps)
+    save_image(created_images, filename, result_images, "output", steps, False)
 
     logging.info("Done.")
     return created_images

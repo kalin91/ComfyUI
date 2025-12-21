@@ -547,11 +547,14 @@ class JSONManagerApp:
                 flow_fn = cast(Callable[[str, str, int], list[str]], self.flow)
 
                 with torch.inference_mode():
-                    image_paths = flow_fn(
-                        os.path.join(gui_utils.get_main_images_path(), foldername),
-                        filename_without_ext,
-                        steps,
-                    )
+                    try:
+                        image_paths = flow_fn(
+                            os.path.join(gui_utils.get_main_images_path(), foldername),
+                            filename_without_ext,
+                            steps,
+                        )
+                    except gui_utils.EndOfFlowException as eofe:
+                        image_paths = eofe.created_images
 
                 if image_paths:
                     self.image_viewer.display_images(image_paths)

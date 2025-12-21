@@ -3,6 +3,9 @@
 import os
 import logging
 import folder_paths
+import torch
+from PIL import Image
+import numpy as np
 
 
 def get_main_images_path() -> str:
@@ -63,3 +66,37 @@ def get_folder_files_recursive(folder: str) -> tuple[list[str], str]:
     result: tuple[list[str], str] = input_dir[0], next(iter(input_dir[1].keys()))
     logging.debug("Input directory for %s; folder %s; files: %s", folder, result[1], result[0])
     return sorted(result[0]), result[1]
+
+
+def save_image(
+    created_images: list[str], filename: str, images: torch.Tensor, identifier: str, steps: int, is_temp: bool = True
+) -> None:
+    """Saves generated images to the temporary directory and appends their paths to created_images."""
+    j: int = 0
+    output_dir = folder_paths.get_temp_directory() if is_temp else folder_paths.get_output_directory()
+    file_saved: bool = False
+    while not file_saved and j < 40:
+        for i, image in enumerate(images):
+            sampler_file_name = os.path.join(output_dir, f"{filename}_{identifier}_{i}_{j}.png")
+            if os.path.exists(sampler_file_name):
+                j += 1
+                continue  # Skip if already exists
+            img_np = 255.0 * image.cpu().numpy()
+            img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
+            img_pil.save(sampler_file_name)
+            logging.info("Saved refiner output to %s", sampler_file_name)
+            file_saved = True
+            created_images.append(sampler_file_name)
+            break
+    if not file_saved:
+        raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")
+    if len(created_images) >= steps:
+        raise EndOfFlowException(created_images)
+
+
+class EndOfFlowException(Exception):
+    """Custom exception to indicate the end of a flow process."""
+
+    def __init__(self, created_images: list[str]) -> None:
+        self.created_images = created_images
+        super().__init__("End of flow reached with created images.")
