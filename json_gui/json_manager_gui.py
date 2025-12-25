@@ -14,6 +14,7 @@ from tkinter import ttk, messagebox, simpledialog
 import yaml
 from PIL import Image, ImageTk
 import torch
+import folder_paths
 import comfy.model_management
 from app.logger import setup_logger
 from json_gui.json_tree_editor import JSONTreeEditor, open_preview
@@ -229,8 +230,18 @@ class JSONManagerApp:
 
         # Right side - Image Viewer
         viewer_frame = ttk.LabelFrame(paned, text="Output Images", padding="5")
+
+        # Clean button at the bottom
+        clean_btn = tk.Button(
+            viewer_frame,
+            text="Clean output Folder",
+            font=("Arial", 8),
+            command=self._clean_output_folder,
+        )
+        clean_btn.pack(side="bottom", anchor="e", pady=2)
+
         self.image_viewer = ImageViewer(viewer_frame)
-        self.image_viewer.pack(fill="both", expand=True)
+        self.image_viewer.pack(side="top", fill="both", expand=True)
         paned.add(viewer_frame, weight=1)
 
         # Status bar
@@ -505,6 +516,24 @@ class JSONManagerApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save file:\n{e}")
             logging.exception("Failed to save file as new file")
+
+    def _clean_output_folder(self) -> None:
+        """Clean the output folder (temp directory)."""
+        output_dir = folder_paths.get_output_directory()
+
+        if not os.path.exists(output_dir):
+            return
+
+        if messagebox.askyesno("Confirm", f"Are you sure you want to delete all files in {output_dir}?"):
+            try:
+                for f in os.listdir(output_dir):
+                    file_path = os.path.join(output_dir, f)
+                    if os.path.isfile(file_path):
+                        os.unlink(file_path)
+                self.image_viewer.clear()
+                self.status_var.set("Output folder cleaned")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to clean folder: {e}")
 
     def _execute(self) -> None:
         """Execute the main function with the selected JSON."""

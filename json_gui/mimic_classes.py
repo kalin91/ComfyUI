@@ -15,7 +15,6 @@ from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
 import folder_paths
 import node_helpers
 from PIL import Image, ImageOps, ImageSequence
-import torchvision.transforms.functional as TF
 
 
 class SimpleKSampler:
@@ -469,34 +468,76 @@ class Rotator:
     def __init__(self, angle: float):
         self._angle = angle
 
-    def rotate_image(self, image: torch.Tensor, func: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
-        """Rotates the given image tensor by the specified angle."""
+    def rotate_image(
+        self,
+        image: torch.Tensor,
+        func: Callable[[torch.Tensor], torch.Tensor]
+    ) -> torch.Tensor:
+        """Rotates the given image tensor by the specified angle.
+
+        Uses PIL with BICUBIC interpolation to minimize quality loss during rotation.
+        Converts tensor -> PIL -> rotate -> tensor for better quality preservation.
+        """
 
         if self._angle == 0:
             return func(image)
 
-        # getting original image size
-        shape = image.shape
-        logging.info("Original image shape: %s", shape)
+        # getting original image size (BHWC format)
+        batch_size, orig_h, orig_w, _channels = image.shape
+        logging.info("Original image shape: %s", image.shape)
 
-        # Rotate images 45 degrees before FaceDetailer
-        logging.info("Rotating images %s degrees for FaceDetailer...", self._angle)
-        # Convert BHWC to BCHW for rotation
-        images_for_rotation = image.movedim(-1, 1)
-        rotated_images = TF.rotate(images_for_rotation, self._angle, expand=True)
-        # Convert back to BHWC
-        rotated_images = rotated_images.movedim(1, -1)
+        # Process each image in the batch
+        rotated_list = []
+        for i in range(batch_size):
+            # Convert tensor to PIL Image (tensor is 0-1 float, HWC)
+            img_np = (image[i].cpu().numpy() * 255).astype(np.uint8)
+            pil_img = Image.fromarray(img_np)
+
+            # Rotate with PIL using BICUBIC interpolation (expand=True to keep corners)
+            rotated_pil = pil_img.rotate(
+                -self._angle,  # PIL rotates counter-clockwise, we want clockwise
+                resample=Image.Resampling.BICUBIC,
+                expand=True,
+            )
+
+            # Convert back to tensor (0-1 float)
+            rotated_np = np.array(rotated_pil).astype(np.float32) / 255.0
+            rotated_list.append(torch.from_numpy(rotated_np))
+
+        # Stack batch back together (BHWC)
+        rotated_images = torch.stack(rotated_list, dim=0).to(image.device)
+        logging.info("Rotated image shape: %s", rotated_images.shape)
+
+        # Run the processing function (e.g., FaceDetailer)
         pre_result: torch.Tensor = func(rotated_images)
 
         # Rotate result back to original orientation
         logging.info("Rotating results back to original orientation...")
-        result_for_rotation = pre_result.movedim(-1, 1)
-        unprocessed_image = TF.rotate(result_for_rotation, -self._angle, expand=True).movedim(1, -1)
+        result_batch = pre_result.shape[0]
+        unrotated_list = []
+        for i in range(result_batch):
+            # Convert tensor to PIL
+            img_np = (pre_result[i].cpu().numpy() * 255).astype(np.uint8)
+            pil_img = Image.fromarray(img_np)
 
-        # Crop to original size
+            # Rotate back with BICUBIC
+            unrotated_pil = pil_img.rotate(
+                self._angle,  # Opposite direction
+                resample=Image.Resampling.BICUBIC,
+                expand=True,
+            )
+
+            # Convert back to tensor
+            unrotated_np = np.array(unrotated_pil).astype(np.float32) / 255.0
+            unrotated_list.append(torch.from_numpy(unrotated_np))
+
+        unprocessed_image = torch.stack(unrotated_list, dim=0).to(image.device)
+
+        # Crop to original size (center crop)
         _, h, w, _ = unprocessed_image.shape
-        top = (h - shape[1]) // 2
-        left = (w - shape[2]) // 2
-        rotated_image = unprocessed_image[:, top: top + shape[1], left: left + shape[2], :]
+        top = (h - orig_h) // 2
+        left = (w - orig_w) // 2
+        rotated_image = unprocessed_image[:, top: top + orig_h, left: left + orig_w, :]
 
+        logging.info("Final cropped image shape: %s", rotated_image.shape)
         return rotated_image

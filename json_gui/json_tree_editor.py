@@ -156,8 +156,6 @@ def open_preview(file_path: str, frame: ttk.Widget) -> None:
             return "break"
 
         win.bind("<Control-c>", copy_to_clipboard)
-
-        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
     except Exception as e:
         logging.exception("Error opening preview window: %s", e)
         messagebox.showerror("Preview Error", f"Error opening preview:\n{e}")
