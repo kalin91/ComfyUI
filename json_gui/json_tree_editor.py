@@ -524,6 +524,7 @@ class JSONTreeEditor(ttk.Frame):
     def __init__(self, parent: tk.Widget, on_change: Optional[Callable[[], None]] = None):
         super().__init__(parent)
         self.data: dict[str, Any] = {}
+        self.body: dict[str, Any] = {}
         self.string_entries: dict[str, tk.Entry] = {}
         self.int_entries: dict[str, tk.Entry] = {}
         self.float_entries: dict[str, tk.Entry] = {}
@@ -560,6 +561,7 @@ class JSONTreeEditor(ttk.Frame):
     def load_data(self, data: dict[str, Any], body: dict[str, Any]) -> None:
         """Load JSON data into the editor."""
         self.data = data
+        self.body = body
         self.string_entries.clear()
         self.int_entries.clear()
         self.float_entries.clear()
@@ -578,6 +580,55 @@ class JSONTreeEditor(ttk.Frame):
         self._build_tree(self.scrollable_frame, data, body["props"], "")
         # Use after_idle to ensure all widget events are processed before marking as clean
         self.after_idle(lambda: self._on_change(False))
+
+    def _create_default_item(self, body_def: dict[str, Any]) -> Any:
+        """Create a default item based on body definition. Uses empty/minimal values."""
+        body_type = body_def.get("type", "string")
+        if body_type == "object":
+            props = body_def.get("props", {})
+            result = {}
+            for prop_key, prop_def in props.items():
+                if prop_def.get("isArray", False):
+                    result[prop_key] = []
+                else:
+                    result[prop_key] = self._create_default_item(prop_def)
+            return result
+        elif body_type in ("string", "file", "combo", "multiline_string"):
+            return ""
+        elif body_type == "int":
+            return body_def.get("min", 0)
+        elif body_type == "float":
+            return body_def.get("min", 0.0)
+        elif body_type == "bool":
+            return False
+        else:
+            return ""
+
+    def _add_array_item(self, data_list: list, body_def: dict[str, Any], is_first: bool) -> None:
+        """Add an item to an array at the specified position."""
+
+        # Create new item based on body definition
+        new_item = self._create_default_item(body_def)
+
+        # Add at position
+        if is_first:
+            data_list.insert(0, new_item)
+        else:
+            data_list.append(new_item)
+
+        # Reload the tree
+        self.load_data(self.data, self.body)
+        self.after_idle(self._notify_change)
+
+    def _delete_array_item(self, data_list: list, index: int) -> None:
+        """Delete an item from an array at the specified index."""
+        # Delete item
+        if 0 <= index < len(data_list):
+            del data_list[index]
+
+        # Reload the tree
+        self.load_data(self.data, self.body)
+        self.after_idle(self._notify_change)
 
     def _build_tree(
         self, parent: tk.Widget, data: dict[str, Any], body: dict[str, Any], prefix: str, indent: int = 0
@@ -603,7 +654,25 @@ class JSONTreeEditor(ttk.Frame):
                     # Array header with label and add buttons
                     label = ttk.Label(frame, text=f"▼ {key} (Array):", font=("TkDefaultFont", 10, "bold"))
                     label.pack(side="left")
-                    label.pack(anchor="w")
+
+                    # Add first button - pass the list reference and body definition
+                    add_first_btn = tk.Button(
+                        frame,
+                        text="+ First",
+                        font=("Arial", 7),
+                        command=lambda arr=value, bdef=item_body_def: self._add_array_item(arr, bdef, True),
+                    )
+                    add_first_btn.pack(side="left", padx=(10, 2))
+
+                    # Add last button
+                    add_last_btn = tk.Button(
+                        frame,
+                        text="+ Last",
+                        font=("Arial", 7),
+                        command=lambda arr=value, bdef=item_body_def: self._add_array_item(arr, bdef, False),
+                    )
+                    add_last_btn.pack(side="left", padx=2)
+
                     for i, item in enumerate(value):
                         item_key = f"{full_key}[{i}]"
                         item_frame = ttk.Frame(parent)
@@ -612,7 +681,17 @@ class JSONTreeEditor(ttk.Frame):
                         # Item label
                         item_label = ttk.Label(item_frame, text=f"{key} [{i}]:", font=("TkDefaultFont", 10, "bold"))
                         item_label.pack(side="left")
-                        item_label.pack(anchor="w")
+
+                        # Delete button for this item - pass the list reference
+                        delete_btn = tk.Button(
+                            item_frame,
+                            text="Delete",
+                            font=("Arial", 7),
+                            fg="red",
+                            command=lambda arr=value, idx=i: self._delete_array_item(arr, idx),
+                        )
+                        delete_btn.pack(side="left", padx=(10, 0))
+
                         if body_type == "object":
                             assert isinstance(item, dict), f"List item '{key}' must be a dict"
                             assert "props" in body[key], f"'props' not specified for key '{key}' in body"
