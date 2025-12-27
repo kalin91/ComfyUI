@@ -598,25 +598,30 @@ class JSONTreeEditor(ttk.Frame):
 
                 if body_is_array:
                     assert isinstance(value, list), f"Value for key '{key}' must be a list"
-                    body[key]["isArray"] = False  # Temporarily set to False to process items
+                    item_body_def = body[key]  # Body definition for array items
+
+                    # Array header with label and add buttons
                     label = ttk.Label(frame, text=f"▼ {key} (Array):", font=("TkDefaultFont", 10, "bold"))
+                    label.pack(side="left")
                     label.pack(anchor="w")
                     for i, item in enumerate(value):
                         item_key = f"{full_key}[{i}]"
                         item_frame = ttk.Frame(parent)
                         item_frame.pack(fill="x", padx=((indent + 1) * 20, 5), pady=2)
+
+                        # Item label
                         item_label = ttk.Label(item_frame, text=f"{key} [{i}]:", font=("TkDefaultFont", 10, "bold"))
+                        item_label.pack(side="left")
                         item_label.pack(anchor="w")
                         if body_type == "object":
                             assert isinstance(item, dict), f"List item '{key}' must be a dict"
                             assert "props" in body[key], f"'props' not specified for key '{key}' in body"
                             self._build_tree(parent, item, body[key]["props"], item_key, indent + 2)
                         else:
-                            # Primitive types in list
-                            self._build_tree(
-                                parent, {f"{key}_{i}": item}, {f"{key}_{i}": body[key]}, item_key, indent + 1
-                            )
-                    body[key]["isArray"] = True  # Restore isArray
+                            # Primitive types in list - create a temporary body without isArray
+                            temp_body = {f"{key}_{i}": {k: v for k, v in body[key].items() if k != "isArray"}}
+                            temp_body[f"{key}_{i}"]["isArray"] = False
+                            self._build_tree(parent, {f"{key}_{i}": item}, temp_body, item_key, indent + 1)
                 elif body_type == "object":
                     assert isinstance(value, dict), f"Value for key '{key}' must be a dict"
                     assert "props" in body[key], f"'props' not specified for key '{key}' in body"
