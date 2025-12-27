@@ -1,5 +1,6 @@
 """Mimic classes for various components."""
 
+import inspect
 import os
 import logging
 from typing import Any, Callable
@@ -7,6 +8,10 @@ import torch
 import numpy as np
 from segment_anything.build_sam import Sam
 import comfy.model_management
+from comfy_extras.nodes_sd3 import SkipLayerGuidanceSD3
+from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
+from comfy.model_patcher import ModelPatcher
+from comfy.controlnet import load_controlnet
 from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.open_pose import OpenposeDetector
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
@@ -58,7 +63,7 @@ class SimpleKSampler:
         self._scheduler = scheduler
         self._denoise = denoise
 
-    def to_dict(self) -> dict:
+    def _to_dict(self) -> dict:
         """Converts the SimpleKSampler instance to a dictionary."""
         logging.info(
             "Sampling 1 with seed=%s, steps=%s, cfg=%s, sampler=%s, scheduler=%s...",
@@ -77,6 +82,42 @@ class SimpleKSampler:
             "scheduler": self._scheduler,
             "denoise": self._denoise,
         }
+
+    def process(
+        self, latent_image: torch.Tensor, model: ModelPatcher, cond_pos_cnet: Any, cond_neg_cnet: Any
+    ) -> torch.Tensor:
+        """A placeholder method to simulate processing."""
+
+        # Prepare noise
+        noisy_latent_image = fix_empty_latent_channels(model, latent_image)
+
+        noise = prepare_noise(noisy_latent_image, self._seed, None)
+
+        # Safely get sampler arguments
+        sampler_arguments = self._to_dict()
+
+        sampler_arguments.update(
+            {
+                "model": model,
+                "noise": noise,
+                "positive": cond_pos_cnet,
+                "negative": cond_neg_cnet,
+                "latent_image": noisy_latent_image,
+                "disable_noise": False,
+                "start_step": None,
+                "last_step": None,
+                "force_full_denoise": False,
+                "noise_mask": None,
+                "callback": None,
+                "disable_pbar": False,
+            }
+        )
+
+        sampler_signature = inspect.signature(sample)
+        for key in sampler_arguments:
+            if key not in sampler_signature.parameters:
+                raise ValueError(f"Unexpected argument '{key}' for comfy.sample.sample")
+        return comfy.sample.sample(**sampler_arguments)
 
 
 class EmptyLatent:
@@ -141,7 +182,7 @@ class ApplyControlNet:
 
         logging.info("Loading ControlNet...")
         controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self.controlnet_path)
-        controlnet = comfy.controlnet.load_controlnet(controlnet_full_path)
+        controlnet = load_controlnet(controlnet_full_path)
 
         if self._strength == 0:
             cond_pos_cnet = cond_pos
@@ -371,7 +412,7 @@ class FaceDetailer(SimpleKSampler):
 
     def to_dict(self) -> dict:
         """Converts the FaceDetailer instance to a dictionary."""
-        base_dict = super().to_dict()
+        base_dict = super()._to_dict()
         base_dict.update(
             {
                 "sam_model_opt": self._sam_model_opt,
@@ -468,11 +509,7 @@ class Rotator:
     def __init__(self, angle: float):
         self._angle = angle
 
-    def rotate_image(
-        self,
-        image: torch.Tensor,
-        func: Callable[[torch.Tensor], torch.Tensor]
-    ) -> torch.Tensor:
+    def rotate_image(self, image: torch.Tensor, func: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
         """Rotates the given image tensor by the specified angle.
 
         Uses PIL with BICUBIC interpolation to minimize quality loss during rotation.
@@ -537,7 +574,48 @@ class Rotator:
         _, h, w, _ = unprocessed_image.shape
         top = (h - orig_h) // 2
         left = (w - orig_w) // 2
-        rotated_image = unprocessed_image[:, top: top + orig_h, left: left + orig_w, :]
+        rotated_image = unprocessed_image[:, top : top + orig_h, left : left + orig_w, :]  # noqa: E203
 
         logging.info("Final cropped image shape: %s", rotated_image.shape)
         return rotated_image
+
+
+class SkipLayers:
+    """A class representing skip layer guidance settings."""
+
+    @property
+    def layers(self) -> str:
+        """Returns the list of layers to skip."""
+        return self._layers
+
+    @property
+    def scale(self) -> float:
+        """Returns the scale factor."""
+        return self._scale
+
+    @property
+    def start_percent(self) -> float:
+        """Returns the start percentage."""
+        return self._start_percent
+
+    @property
+    def end_percent(self) -> float:
+        """Returns the end percentage."""
+        return self._end_percent
+
+    def tunned_model(self, model: ModelPatcher) -> ModelPatcher:
+        """Returns the tuned model."""
+        result: tuple = SkipLayerGuidanceSD3.execute(
+            model,
+            self._layers,
+            self._scale,
+            self._start_percent,
+            self._end_percent,
+        )
+        return result[0]
+
+    def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
+        self._layers = ",".join(str(layer) for layer in layers)
+        self._scale = scale
+        self._start_percent = start_percent
+        self._end_percent = end_percent

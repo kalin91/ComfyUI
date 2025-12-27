@@ -3,7 +3,15 @@
 import os
 import json
 import logging
-from json_gui.mimic_classes import OpenPosePose, ApplyControlNet, EmptyLatent, SimpleKSampler, FaceDetailer, Rotator
+from json_gui.mimic_classes import (
+    OpenPosePose,
+    ApplyControlNet,
+    EmptyLatent,
+    SimpleKSampler,
+    FaceDetailer,
+    Rotator,
+    SkipLayers,
+)
 
 
 class Model:
@@ -49,6 +57,11 @@ class Model:
         """Returns the Rotator instance."""
         return self._rotator
 
+    @property
+    def skip_layers_model(self) -> SkipLayers:
+        """Returns the SkipLayers instance."""
+        return self._skip_layers_model
+
     def __init__(
         self,
         filepath: str,
@@ -67,3 +80,4 @@ class Model:
         self._simple_k_sampler = [SimpleKSampler(**s) for s in json_props["simple_k_sampler"]]
         self._face_detailer = FaceDetailer(**json_props["face_detailer"])
         self._rotator = Rotator(**json_props["rotator"])
+        self._skip_layers_model = SkipLayers(**json_props["skip_layers_model"])

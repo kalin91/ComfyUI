@@ -12,6 +12,7 @@ from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDeta
 from json_gui.scripts.controlnet_openpose.model import Model
 from json_gui.utils import save_image
 from comfy_extras.nodes_mask import MaskToImage
+from model_patcher import ModelPatcher
 
 # Paths - User to replace these
 CHECKPOINT_PATH = "sd3.5_medium.safetensors"
@@ -32,6 +33,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
     model, _a, vae, _b = comfy.sd.load_checkpoint_guess_config(
         ckpt_path, output_vae=True, output_clip=False, embedding_directory=folder_paths.get_folder_paths("embeddings")
     )
+    tunned_model: ModelPatcher = flow.skip_layers_model.tunned_model(model)
 
     # 2. Load Triple CLIP
     logging.info("Loading CLIPs...")
@@ -66,39 +68,11 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
     latent_image = flow.empty_latent.latent
 
     for sampler_idx, current_sampler in enumerate(flow.simple_k_sampler):
+        logging.info("Running Sampler %d...", sampler_idx)
 
-        # Prepare noise
-        noisy_latent_image = comfy.sample.fix_empty_latent_channels(model, latent_image)
+        latent_image = current_sampler.process(latent_image, tunned_model, cond_pos_cnet, cond_neg_cnet)
 
-        noise = comfy.sample.prepare_noise(noisy_latent_image, current_sampler.seed, None)
-
-        sampler_arguments = current_sampler.to_dict()
-
-        sampler_arguments.update(
-            {
-                "model": model,
-                "noise": noise,
-                "positive": cond_pos_cnet,
-                "negative": cond_neg_cnet,
-                "latent_image": noisy_latent_image,
-                "disable_noise": False,
-                "start_step": None,
-                "last_step": None,
-                "force_full_denoise": False,
-                "noise_mask": None,
-                "callback": None,
-                "disable_pbar": False,
-            }
-        )
-
-        sampler_signature = inspect.signature(comfy.sample.sample)
-        for key in sampler_arguments.keys():
-            if key not in sampler_signature.parameters:
-                raise ValueError(f"Unexpected argument '{key}' for comfy.sample.sample")
-
-        latent_image = comfy.sample.sample(**sampler_arguments)
-
-        # 10. Decode
+        # Decode
         logging.info("Decoding...")
         images = vae.decode(latent_image.clone())
         logging.info("VAE Output Shape: %s", images.shape)

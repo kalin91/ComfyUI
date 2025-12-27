@@ -361,13 +361,16 @@ def _create_number_validator(
             entry_widget: ttk.Spinbox = l_val[1][0] if l_val[1] else None
             assert entry_widget, "Entry widget not found for validation"
 
-            def reset_value() -> None:
+            def reset_value(to_val: str = None) -> None:
                 """Reset entry to last valid value."""
-                entry_widget.set(last_value)
+                to_val = str(last_value) if to_val is None else to_val
+                entry_widget.set(to_val)
                 entry_widget.config(validate="focusout")
 
+            val_zero: bool = False
             if value in ("", "-", "."):
                 value = "0"
+                val_zero = True
 
             val = t_val(value)
             if val < p_min or val > p_max:
@@ -381,7 +384,10 @@ def _create_number_validator(
                     entry_widget.after_idle(reset_value)
                     return False
             l_val[0][0] = val
-            entry_widget.after_idle(lambda: entry_widget.config(validate="focusout"))
+            if val_zero:
+                entry_widget.after_idle(lambda: reset_value(val))
+            else:
+                entry_widget.after_idle(lambda: entry_widget.config(validate="focusout"))
             return True
         except ValueError:
             entry_widget.after_idle(reset_value)
@@ -751,7 +757,11 @@ class JSONTreeEditor(ttk.Frame):
                     assert list_key in current and isinstance(
                         current[list_key], list
                     ), f"List key '{list_key}' not found in data"
-                    current = current[list_key][index]
+                    next_current = current[list_key][index]
+                    if not isinstance(next_current, dict):
+                        current[list_key][index] = value
+                        continue
+                    current = next_current
                 if key in current:
                     current = current[key]
             final_key = keys[-1]
