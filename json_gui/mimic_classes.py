@@ -10,6 +10,7 @@ from segment_anything.build_sam import Sam
 import comfy.model_management
 from comfy_extras.nodes_sd3 import SkipLayerGuidanceSD3
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
+from comfy.sd import load_checkpoint_guess_config, VAE
 from comfy.model_patcher import ModelPatcher
 from comfy.controlnet import load_controlnet
 from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
@@ -55,13 +56,28 @@ class SimpleKSampler:
         """Returns the denoise value."""
         return self._denoise
 
-    def __init__(self, seed: int, steps: int, cfg: float, sampler_name: str, scheduler: str, denoise: float):
+    @property
+    def use_tune(self) -> bool:
+        """Returns whether to use tune."""
+        return self._use_tune
+
+    def __init__(
+        self,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        use_tune: bool,
+    ):
         self._seed = seed
         self._steps = steps
         self._cfg = cfg
         self._sampler_name = sampler_name
         self._scheduler = scheduler
         self._denoise = denoise
+        self._use_tune = use_tune
 
     def _to_dict(self) -> dict:
         """Converts the SimpleKSampler instance to a dictionary."""
@@ -410,6 +426,11 @@ class FaceDetailer(SimpleKSampler):
         """Returns the wildcard."""
         return self._wildcard
 
+    @property
+    def use_tune(self) -> bool:
+        """Returns whether to use tune."""
+        return self._use_tune
+
     def to_dict(self) -> dict:
         """Converts the FaceDetailer instance to a dictionary."""
         base_dict = super()._to_dict()
@@ -454,8 +475,6 @@ class FaceDetailer(SimpleKSampler):
         noise_mask: bool,
         force_inpaint: bool,
         drop_size: int,
-        # refiner_ratio: float,
-        # batch_size: int,
         cycle: int,
         bbox_threshold: float,
         bbox_dilation: int,
@@ -469,8 +488,9 @@ class FaceDetailer(SimpleKSampler):
         bbox_detector: str,
         sam_model_opt: str,
         wildcard: str,
+        use_tune: bool,
     ):
-        super().__init__(seed, steps, cfg, sampler_name, scheduler, denoise)
+        super().__init__(seed, steps, cfg, sampler_name, scheduler, denoise, use_tune)
         self._guide_size = guide_size
         self._guide_size_for = guide_size_for
         self._max_size = max_size
@@ -583,39 +603,40 @@ class Rotator:
 class SkipLayers:
     """A class representing skip layer guidance settings."""
 
-    @property
-    def layers(self) -> str:
-        """Returns the list of layers to skip."""
-        return self._layers
+    CHECKPOINT_PATH = "sd3.5_medium.safetensors"
 
-    @property
-    def scale(self) -> float:
-        """Returns the scale factor."""
-        return self._scale
-
-    @property
-    def start_percent(self) -> float:
-        """Returns the start percentage."""
-        return self._start_percent
-
-    @property
-    def end_percent(self) -> float:
-        """Returns the end percentage."""
-        return self._end_percent
-
-    def tunned_model(self, model: ModelPatcher) -> ModelPatcher:
+    def get_model(self, use_tuned: bool) -> ModelPatcher:
         """Returns the tuned model."""
-        result: tuple = SkipLayerGuidanceSD3.execute(
-            model,
-            self._layers,
-            self._scale,
-            self._start_percent,
-            self._end_percent,
-        )
-        return result[0]
+        return self._tunned_model if use_tuned else self._base_model
+
+    @property
+    def vae(self) -> VAE:
+        """Returns the VAE."""
+        return self._vae
 
     def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
+        # 1. Load Model and VAE
+        logging.info("Loading Checkpoint...")
+        ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", self.CHECKPOINT_PATH)
+        self._base_model, _a, self._vae, _b = load_checkpoint_guess_config(
+            ckpt_path,
+            output_vae=True,
+            output_clip=False,
+            embedding_directory=folder_paths.get_folder_paths("embeddings"),
+        )
         self._layers = ",".join(str(layer) for layer in layers)
         self._scale = scale
         self._start_percent = start_percent
         self._end_percent = end_percent
+
+        if self._layers:
+            result: tuple = SkipLayerGuidanceSD3.execute(
+                self._base_model,
+                self._layers,
+                self._scale,
+                self._start_percent,
+                self._end_percent,
+            )
+            self._tunned_model = result[0]
+        else:
+            self._tunned_model = self._base_model

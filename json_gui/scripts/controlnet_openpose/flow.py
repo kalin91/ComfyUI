@@ -12,7 +12,6 @@ from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDeta
 from json_gui.scripts.controlnet_openpose.model import Model
 from json_gui.utils import save_image
 from comfy_extras.nodes_mask import MaskToImage
-from model_patcher import ModelPatcher
 
 # Paths - User to replace these
 CHECKPOINT_PATH = "sd3.5_medium.safetensors"
@@ -27,13 +26,7 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
 
     flow: Model = Model(os.path.join(path_file, f"{filename}.json"))
 
-    # 1. Load Model and VAE
-    logging.info("Loading Checkpoint...")
-    ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", CHECKPOINT_PATH)
-    model, _a, vae, _b = comfy.sd.load_checkpoint_guess_config(
-        ckpt_path, output_vae=True, output_clip=False, embedding_directory=folder_paths.get_folder_paths("embeddings")
-    )
-    tunned_model: ModelPatcher = flow.skip_layers_model.tunned_model(model)
+    skip_layers_model = flow.skip_layers_model
 
     # 2. Load Triple CLIP
     logging.info("Loading CLIPs...")
@@ -63,18 +56,22 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
     cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
 
     # 7. Apply ControlNet Advanced
-    cond_pos_cnet, cond_neg_cnet = flow.apply_control_net.conditionals(cond_pos, cond_neg, pose_image_tensor, vae)
+    cond_pos_cnet, cond_neg_cnet = flow.apply_control_net.conditionals(
+        cond_pos, cond_neg, pose_image_tensor, skip_layers_model.vae
+    )
 
     latent_image = flow.empty_latent.latent
 
     for sampler_idx, current_sampler in enumerate(flow.simple_k_sampler):
         logging.info("Running Sampler %d...", sampler_idx)
 
-        latent_image = current_sampler.process(latent_image, tunned_model, cond_pos_cnet, cond_neg_cnet)
+        latent_image = current_sampler.process(
+            latent_image, skip_layers_model.get_model(current_sampler.use_tune), cond_pos_cnet, cond_neg_cnet
+        )
 
         # Decode
         logging.info("Decoding...")
-        images = vae.decode(latent_image.clone())
+        images = skip_layers_model.vae.decode(latent_image.clone())
         logging.info("VAE Output Shape: %s", images.shape)
 
         # Ensure BHWC (Batch, Height, Width, Channels)
@@ -107,9 +104,9 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
         face_arguments.update(
             {
                 "image": input_image,
-                "model": model,
+                "model": skip_layers_model.get_model(flow.face_detailer.use_tune),
                 "clip": clip,
-                "vae": vae,
+                "vae": skip_layers_model.vae,
                 "positive": cond_pos,
                 "negative": cond_neg,
                 "segm_detector_opt": None,  # Not using segm detector here

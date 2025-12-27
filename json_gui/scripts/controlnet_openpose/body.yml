@@ -85,6 +85,9 @@ props:
     type: object
     isArray: true
     props:
+      use_tune:
+        type: bool
+        isArray: false
       seed:
         type: int
         isArray: false
@@ -120,6 +123,9 @@ props:
     type: object
     isArray: false
     props:
+      use_tune:
+        type: bool
+        isArray: false
       seed:
         type: int
         isArray: false
