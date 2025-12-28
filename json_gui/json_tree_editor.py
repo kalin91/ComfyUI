@@ -9,7 +9,7 @@ import logging
 import tkinter as tk
 import random
 from tkinter import ttk, messagebox
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 from PIL import Image, ImageTk
 import json_gui.utils as gui_utils
 from json_gui.scroll_utils import bind_frame_scroll_events, bind_scroll_events
@@ -521,7 +521,7 @@ def _create_numeric_entry(
 class JSONTreeEditor(ttk.Frame):
     """A hierarchical, editable view for JSON data."""
 
-    def __init__(self, parent: tk.Widget, on_change: Optional[Callable[[], None]] = None):
+    def __init__(self, parent: tk.Widget, on_change: Callable[[], None], on_refresh: Callable[[], bool]) -> None:
         super().__init__(parent)
         self.data: dict[str, Any] = {}
         self.body: dict[str, Any] = {}
@@ -534,6 +534,7 @@ class JSONTreeEditor(ttk.Frame):
         self.file_entries: dict[str, ttk.Combobox] = {}
         self.combo_entries: dict[str, ttk.Combobox] = {}
         self._on_change = on_change  # Callback when any value changes
+        self._on_refresh = on_refresh  # Callback to check for unsaved changes
 
         # Create canvas with scrollbar
         self.canvas = tk.Canvas(self, highlightthickness=0, name=JSON_CANVAS_NAME)
@@ -604,11 +605,17 @@ class JSONTreeEditor(ttk.Frame):
         else:
             return ""
 
-    def _add_array_item(self, data_list: list, body_def: dict[str, Any], is_first: bool) -> None:
+    def _add_array_item(self, key: str, body_def: dict[str, Any], is_first: bool) -> None:
         """Add an item to an array at the specified position."""
+
+        if not self._on_refresh():
+            return
 
         # Create new item based on body definition
         new_item = self._create_default_item(body_def)
+
+        # Get current list or create if not exists
+        data_list: list = self._set_nested_value(self.data, key, [])
 
         # Add at position
         if is_first:
@@ -616,15 +623,28 @@ class JSONTreeEditor(ttk.Frame):
         else:
             data_list.append(new_item)
 
+        # Update the data structure
+        self._set_nested_value(self.data, key, data_list)
+
         # Reload the tree
         self.load_data(self.data, self.body)
         self.after_idle(self._notify_change)
 
-    def _delete_array_item(self, data_list: list, index: int) -> None:
+    def _delete_array_item(self, key: str, index: int) -> None:
         """Delete an item from an array at the specified index."""
+
+        if not self._on_refresh():
+            return
+
+        # Get current list or create if not exists
+        data_list: list = self._set_nested_value(self.data, key, [])
+
         # Delete item
         if 0 <= index < len(data_list):
             del data_list[index]
+
+        # Update the data structure
+        self._set_nested_value(self.data, key, data_list)
 
         # Reload the tree
         self.load_data(self.data, self.body)
@@ -660,7 +680,7 @@ class JSONTreeEditor(ttk.Frame):
                         frame,
                         text="+ First",
                         font=("Arial", 7),
-                        command=lambda arr=value, bdef=item_body_def: self._add_array_item(arr, bdef, True),
+                        command=lambda k=full_key, bdef=item_body_def: self._add_array_item(k, bdef, True),
                     )
                     add_first_btn.pack(side="left", padx=(10, 2))
 
@@ -669,7 +689,7 @@ class JSONTreeEditor(ttk.Frame):
                         frame,
                         text="+ Last",
                         font=("Arial", 7),
-                        command=lambda arr=value, bdef=item_body_def: self._add_array_item(arr, bdef, False),
+                        command=lambda k=full_key, bdef=item_body_def: self._add_array_item(k, bdef, False),
                     )
                     add_last_btn.pack(side="left", padx=2)
 
@@ -688,7 +708,7 @@ class JSONTreeEditor(ttk.Frame):
                             text="Delete",
                             font=("Arial", 7),
                             fg="red",
-                            command=lambda arr=value, idx=i: self._delete_array_item(arr, idx),
+                            command=lambda k=full_key, idx=i: self._delete_array_item(k, idx),
                         )
                         delete_btn.pack(side="left", padx=(10, 0))
 
@@ -816,6 +836,9 @@ class JSONTreeEditor(ttk.Frame):
         for full_key, combo in self.combo_entries.items():
             self._set_nested_value(result, full_key, combo.get())
 
+        # Update internal data copy
+        self.data = self._deep_copy_structure(result)
+
         return result
 
     def _deep_copy_structure(self, obj: Any) -> Any:
@@ -827,9 +850,10 @@ class JSONTreeEditor(ttk.Frame):
         else:
             return obj
 
-    def _set_nested_value(self, data: dict, key_path: str, value: Any) -> None:
-        """Set a value in a nested dict using dot notation."""
+    def _set_nested_value(self, data: dict, key_path: str, value: Any) -> Any:
+        """Set a value in a nested dict using dot notation and returns previous value."""
         try:
+            old_value: Any = None
             keys = key_path.split(".")
             current = data
             for key in keys[:-1]:
@@ -843,6 +867,7 @@ class JSONTreeEditor(ttk.Frame):
                     ), f"List key '{list_key}' not found in data"
                     next_current = current[list_key][index]
                     if not isinstance(next_current, dict):
+                        old_value = next_current
                         current[list_key][index] = value
                         continue
                     current = next_current
@@ -850,7 +875,9 @@ class JSONTreeEditor(ttk.Frame):
                     current = current[key]
             final_key = keys[-1]
             if final_key in current:
+                old_value = current[final_key]
                 current[final_key] = value
+            return old_value
         except Exception as e:
             messagebox.showerror("Error", f"Error setting nested value for key '{key_path}':\n{e}")
             logging.exception("Error setting nested value for key '%s': %s", key_path, e)

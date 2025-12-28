@@ -60,6 +60,13 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
         cond_pos, cond_neg, pose_image_tensor, skip_layers_model.vae
     )
 
+    del pose_image_tensor  # Free memory
+    del tokens_pos
+    del tokens_neg
+    del cond_pos
+    del cond_neg
+    torch.cuda.empty_cache()
+
     latent_image = flow.empty_latent.latent
 
     for sampler_idx, current_sampler in enumerate(flow.simple_k_sampler):

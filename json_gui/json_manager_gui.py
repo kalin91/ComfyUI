@@ -224,7 +224,9 @@ class JSONManagerApp:
 
         # Left side - JSON Editor
         editor_frame = ttk.LabelFrame(paned, text="JSON Editor", padding="5")
-        self.json_editor = JSONTreeEditor(editor_frame, on_change=self._mark_changes)
+        self.json_editor = JSONTreeEditor(
+            editor_frame, on_change=self._mark_changes, on_refresh=self._check_unsaved_changes
+        )
         self.json_editor.pack(fill="both", expand=True)
         paned.add(editor_frame, weight=1)
 
