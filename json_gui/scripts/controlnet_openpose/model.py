@@ -28,6 +28,11 @@ class Model:
         return self._negative
 
     @property
+    def skip_openpose(self) -> bool:
+        """Returns whether to skip openpose processing."""
+        return self._skip_openpose
+
+    @property
     def openpose_pose(self) -> OpenPosePose:
         """Returns the OpenPosePose instance."""
         return self._openpose_pose
@@ -74,6 +79,7 @@ class Model:
             json_props = json.load(file)
         self._positive = json_props["positive"]
         self._negative = json_props["negative"]
+        self._skip_openpose = json_props["skip_openpose"]
         self._openpose_pose = OpenPosePose(**json_props["openpose_pose"])
         self._apply_control_net = ApplyControlNet(**json_props["apply_control_net"])
         self._empty_latent = EmptyLatent(**json_props["empty_latent"])

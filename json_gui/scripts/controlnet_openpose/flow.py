@@ -38,13 +38,9 @@ class Flow(AbsFlow):
             embedding_directory=folder_paths.get_folder_paths("embeddings"),
         )
 
-        # Run preprocessor
-        pose_image_tensor = flow.openpose_pose.tensor()
-
-        self.save_image(pose_image_tensor, "pose", steps)
         # 6. Encode Prompts
-        positive_prompt = flow.positive
-        negative_prompt = flow.negative
+        positive_prompt: str = flow.positive
+        negative_prompt: str = flow.negative
 
         logging.info("Encoding prompts...")
         tokens_pos = clip.tokenize(positive_prompt)
@@ -53,15 +49,25 @@ class Flow(AbsFlow):
         tokens_neg = clip.tokenize(negative_prompt)
         cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
 
-        # 7. Apply ControlNet Advanced
-        cond_pos_cnet, cond_neg_cnet = flow.apply_control_net.conditionals(
-            cond_pos, cond_neg, pose_image_tensor, skip_layers_model.vae
-        )
+        # Run preprocessor
+        if flow.skip_openpose:
+            cond_pos_cnet = cond_pos
+            cond_neg_cnet = cond_neg
+            logging.info("Skipping OpenPose processing as per configuration.")
+        else:
+            pose_image_tensor = flow.openpose_pose.tensor()
 
-        del pose_image_tensor  # Free memory
-        del tokens_pos
-        del tokens_neg
-        torch.cuda.empty_cache()
+            self.save_image(pose_image_tensor, "pose", steps)
+
+            # 7. Apply ControlNet Advanced
+            cond_pos_cnet, cond_neg_cnet = flow.apply_control_net.conditionals(
+                cond_pos, cond_neg, pose_image_tensor, skip_layers_model.vae
+            )
+
+            del pose_image_tensor  # Free memory
+            del tokens_pos
+            del tokens_neg
+            torch.cuda.empty_cache()
 
         latent_image = flow.empty_latent.latent
 
@@ -110,8 +116,8 @@ class Flow(AbsFlow):
                     "model": skip_layers_model.get_model(flow.face_detailer.use_tune),
                     "clip": clip,
                     "vae": skip_layers_model.vae,
-                    "positive": cond_pos,
-                    "negative": cond_neg,
+                    "positive": cond_pos_cnet,
+                    "negative": cond_neg_cnet,
                     "segm_detector_opt": None,  # Not using segm detector here
                     "detailer_hook": None,
                 }

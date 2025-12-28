@@ -5,6 +5,9 @@ props:
   negative:
     type: multiline_string
     isArray: false
+  skip_openpose:
+    type: bool
+    isArray: false
   openpose_pose:
     type: object
     isArray: false
