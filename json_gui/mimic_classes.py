@@ -292,6 +292,7 @@ class OpenPosePose:
         scale_stick_for_xinsr_cn: bool,
         resolution: int,
     ):
+        assert image_name, "Image name must be provided for OpenPosePose."
         self._detect_body = detect_body
         self._detect_hands = detect_hands
         self._detect_face = detect_face

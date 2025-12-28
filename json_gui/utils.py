@@ -1,7 +1,11 @@
 """Utility functions for JSON GUI management."""
 
 import os
+import re
 import logging
+import shutil
+from abc import ABC, abstractmethod
+from typing import Optional
 import folder_paths
 import torch
 from PIL import Image
@@ -60,6 +64,13 @@ def get_input_files_recursive() -> tuple[list[str], str]:
     return sorted(output_list), input_folder
 
 
+def _get_output_files_recursive() -> tuple[list[str], str]:
+    """Returns a list of output files filtered by content types."""
+    output_folder = folder_paths.get_output_directory()
+    files, _ = folder_paths.recursive_search(output_folder, excluded_dir_names=[".git"])
+    return sorted(files), output_folder
+
+
 def get_folder_files_recursive(folder: str) -> tuple[list[str], str]:
     """Retrieves the list of filenames and the directory they are located in."""
     input_dir = folder_paths.get_filename_list_(folder)
@@ -68,35 +79,107 @@ def get_folder_files_recursive(folder: str) -> tuple[list[str], str]:
     return sorted(result[0]), result[1]
 
 
-def save_image(
-    created_images: list[str], filename: str, images: torch.Tensor, identifier: str, steps: int, is_temp: bool = True
-) -> None:
-    """Saves generated images to the temporary directory and appends their paths to created_images."""
-    j: int = 0
-    output_dir = folder_paths.get_temp_directory() if is_temp else folder_paths.get_output_directory()
-    file_saved: bool = False
-    while not file_saved and j < 40:
-        for i, image in enumerate(images):
-            sampler_file_name = os.path.join(output_dir, f"{filename}_{identifier}_{i}_{j}.png")
-            if os.path.exists(sampler_file_name):
-                j += 1
-                continue  # Skip if already exists
-            img_np = 255.0 * image.cpu().numpy()
-            img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
-            img_pil.save(sampler_file_name)
-            logging.info("Saved refiner output to %s", sampler_file_name)
-            file_saved = True
-            created_images.append(sampler_file_name)
-            break
-    if not file_saved:
-        raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")
-    if len(created_images) >= steps:
-        raise EndOfFlowException(created_images)
+class AbsFlow(ABC):
+    """Abstract base class for flow implementations."""
+
+    @property
+    def json_path(self) -> str:
+        """Returns the JSON path associated with the flow."""
+        return self._json_path
+
+    def __init__(self, path_file: str, filename: str) -> None:
+        """Initializes the AbsFlow instance."""
+        self._last_saved_to_temp: Optional[bool] = None
+        self._created_images: list[str] = []
+        self._json_path = os.path.join(path_file, f"{filename}.json")
+        files, folder = _get_output_files_recursive()
+        idx = 0
+        if files:
+            pattern: str = filename + r"_r(\d+)\.json$"
+            # Find all matching files and extract the max index
+            indexes = [
+                int(re.search(pattern, os.path.basename(f)).group(1))
+                for f in files
+                if re.search(pattern, os.path.basename(f))
+            ]
+            if indexes:
+                idx = max(indexes) + 1
+        self._file_identifier = f"{filename}_r{idx}"
+
+        # delete any output files with this identifier
+        for f in files:
+            if self._file_identifier in f:
+                os.remove(f)
+                logging.info("Deleted existing output file: %s", f)
+
+        # delete any temp files with this identifier
+        files, _ = folder_paths.recursive_search(folder_paths.get_temp_directory(), excluded_dir_names=[".git"])
+        for f in files:
+            if self._file_identifier in f:
+                os.remove(os.path.join(folder, f))
+                logging.info("Deleted existing temp file: %s", f)
+
+    def run(self, steps: int) -> list[str]:
+        """Runs the flow and returns a list of created image file paths."""
+        # Saving a copy of json file to output directory
+        output_json_path = os.path.join(
+            folder_paths.get_output_directory(), f"{self._file_identifier}.json"
+        )
+        shutil.copy2(self._json_path, output_json_path)
+        logging.info("Saved flow JSON to output directory: %s", output_json_path)
+        with torch.inference_mode():
+            try:
+                self._run_impl(steps)
+            except EndOfFlowException as eofe:
+                logging.info("Flow ended early after %d steps.", eofe.steps)
+        if self._last_saved_to_temp is True:
+            # Copy last saved image to output directory
+            last_image_path = self._created_images[-1]
+            img_filename = os.path.basename(last_image_path)
+            output_image_path = os.path.join(folder_paths.get_output_directory(), img_filename)
+            shutil.copy2(last_image_path, output_image_path)
+            logging.info("Copied final image to output directory: %s", output_image_path)
+            self._created_images[-1] = output_image_path
+        return self._created_images
+
+    @abstractmethod
+    def _run_impl(self, steps: int) -> None:
+        """Runs the flow and returns a list of created image file paths."""
+
+    def save_image(
+        self,
+        images: torch.Tensor,
+        identifier: str,
+        steps: int,
+        is_temp: bool = True,
+    ) -> None:
+        """Saves generated images to the temporary directory and appends their paths to created_images."""
+        j: int = len(self._created_images)
+        output_dir = folder_paths.get_temp_directory() if is_temp else folder_paths.get_output_directory()
+        file_saved: bool = False
+        while not file_saved and j < 40:
+            for image in images:
+                sampler_file_name = os.path.join(output_dir, f"{self._file_identifier}_{identifier}_{j}.png")
+                if os.path.exists(sampler_file_name):
+                    j += 1
+                    continue  # Skip if already exists
+                img_np = 255.0 * image.cpu().numpy()
+                img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
+                img_pil.save(sampler_file_name)
+                logging.info("Saved refiner output to %s", sampler_file_name)
+                file_saved = True
+                self._created_images.append(sampler_file_name)
+                break
+        if not file_saved:
+            raise RuntimeError("Failed to save refiner output after multiple attempts. clean up temp files.")
+        self._last_saved_to_temp = is_temp
+        if len(self._created_images) >= steps:
+            raise EndOfFlowException(steps)
 
 
 class EndOfFlowException(Exception):
     """Custom exception to indicate the end of a flow process."""
 
-    def __init__(self, created_images: list[str]) -> None:
-        self.created_images = created_images
-        super().__init__("End of flow reached with created images.")
+    def __init__(self, steps: int) -> None:
+        self.steps = steps
+        super().__init__(f"End of flow after reaching {steps} steps limit.")

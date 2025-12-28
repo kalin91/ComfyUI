@@ -1,13 +1,12 @@
 """GUI Application for managing JSON configuration files."""
 
 import gc
-import importlib
-import inspect
+from importlib.util import spec_from_file_location, module_from_spec
 import json
 import os
 import logging
 from pathlib import Path
-from typing import Any, Callable, Optional, cast
+from typing import Any, Callable, Optional, Type
 import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
@@ -101,24 +100,18 @@ class JSONManagerApp:
     """Main application class."""
 
     @property
-    def flow(self) -> Optional[Callable[[str, str, int], list[str]]]:
+    def flow(self) -> Optional[Type[gui_utils.AbsFlow]]:
         """Get the flow callable."""
         return self._flow
 
     @flow.setter
-    def flow(self, value: Optional[Callable[[str, str, int], list[str]]]) -> None:
+    def flow(self, value: Optional[Type[gui_utils.AbsFlow]]) -> None:
         """Set the flow callable and validate its signature."""
         if value is None:
             self._flow = None
             return
-        # Validate that value is a Callable
-        assert callable(value), "flow must be a callable"
-        # Validate the signature main(path_file: str, filename: str, steps: int) -> list[str]
-        signature = inspect.signature(value)
-        params = list(signature.parameters.keys())
-        assert params == ["path_file", "filename", "steps"], f"Invalid parameters: {params}"
-        assert signature.return_annotation == list[str], "Invalid return type"
-
+        # Validate that value is an instance of AbsFlow
+        assert issubclass(value, gui_utils.AbsFlow), "flow must be an instance of AbsFlow"
         self._flow = value
 
     @flow.deleter
@@ -408,11 +401,11 @@ class JSONManagerApp:
                 """Load the script for the selected folder and set the flow function."""
                 # verify that the script has a main function
                 module_path = Path(flow)
-                spec = importlib.util.spec_from_file_location(module_path.stem, flow)
-                module = importlib.util.module_from_spec(spec)
+                spec = spec_from_file_location(module_path.stem, flow)
+                module = module_from_spec(spec)
                 spec.loader.exec_module(module)
-                assert hasattr(module, "main"), f"Script {flow} does not have a main function"
-                self.flow = getattr(module, "main")
+                assert hasattr(module, "Flow"), f"Script {flow} does not have a main function"
+                self.flow = getattr(module, "Flow")
 
             loading_modal.show_loading_modal(self.root, load_script, (), f"Loading Flow: {foldername}...")
             assert self.flow is not None, "Flow function is not set after loading script"
@@ -572,20 +565,12 @@ class JSONManagerApp:
             """Run the flow function in a separate thread."""
             try:
                 assert self.flow is not None, "Flow function is not set"
-                # Import and run the main function
-                assert self.flow is not None, "Flow function is not set"
-                assert callable(self.flow), "Flow is not callable"
-                flow_fn = cast(Callable[[str, str, int], list[str]], self.flow)
+                assert issubclass(self.flow, gui_utils.AbsFlow), "Flow is not a subclass of AbsFlow"
+                flow_inst: gui_utils.AbsFlow = self._flow(
+                    os.path.join(gui_utils.get_main_images_path(), foldername), filename_without_ext
+                )
 
-                with torch.inference_mode():
-                    try:
-                        image_paths = flow_fn(
-                            os.path.join(gui_utils.get_main_images_path(), foldername),
-                            filename_without_ext,
-                            steps,
-                        )
-                    except gui_utils.EndOfFlowException as eofe:
-                        image_paths = eofe.created_images
+                image_paths = flow_inst.run(steps)
 
                 if image_paths:
                     self.image_viewer.display_images(image_paths)
