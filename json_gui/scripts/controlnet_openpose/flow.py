@@ -6,7 +6,6 @@ import logging
 
 import torch
 import comfy.sd
-import comfy.sample
 import folder_paths
 from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer
 from json_gui.scripts.controlnet_openpose.model import Model
@@ -14,7 +13,6 @@ from json_gui.utils import save_image
 from comfy_extras.nodes_mask import MaskToImage
 
 # Paths - User to replace these
-CHECKPOINT_PATH = "sd3.5_medium.safetensors"
 CLIP_G_PATH = "sd35m/clip_g.safetensors"
 CLIP_L_PATH = "sd35m/clip_l.safetensors"
 T5_PATH = "sd35m/t5xxl_fp16.safetensors"
@@ -63,8 +61,6 @@ def main(path_file: str, filename: str, steps: int) -> list[str]:
     del pose_image_tensor  # Free memory
     del tokens_pos
     del tokens_neg
-    del cond_pos
-    del cond_neg
     torch.cuda.empty_cache()
 
     latent_image = flow.empty_latent.latent
