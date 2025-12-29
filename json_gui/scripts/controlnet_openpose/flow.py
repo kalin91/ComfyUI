@@ -20,12 +20,10 @@ T5_PATH = "sd35m/t5xxl_fp16.safetensors"
 class Flow(AbsFlow):
     """ControlNet OpenPose Flow implementation."""
 
-    def _run_impl(self, steps: int) -> list[str]:
-        """Main function to run the ControlNet flow."""
-
-        flow: Model = Model(self.json_path)
-
-        skip_layers_model = flow.skip_layers_model
+    def __init__(self, file_path: str, file_name: str) -> None:
+        """Initializes the Flow with specific file paths."""
+        super().__init__(file_path, file_name)
+        self._flow: Model = Model(self.json_path)
 
         # 2. Load Triple CLIP
         logging.info("Loading CLIPs...")
@@ -33,50 +31,57 @@ class Flow(AbsFlow):
         clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_L_PATH)
         clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", T5_PATH)
 
-        clip = comfy.sd.load_clip(
+        self._clip = comfy.sd.load_clip(
             ckpt_paths=[clip_path1, clip_path2, clip_path3],
             embedding_directory=folder_paths.get_folder_paths("embeddings"),
         )
 
+    def _run_impl(self, steps: int) -> list[str]:
+        """Main function to run the ControlNet flow."""
+
+        self._flow.refresh()
+
+        skip_layers_model = self._flow.skip_layers_model
+
         # 6. Encode Prompts
-        positive_prompt: str = flow.positive
-        negative_prompt: str = flow.negative
+        positive_prompt: str = self._flow.positive
+        negative_prompt: str = self._flow.negative
 
         logging.info("Encoding prompts...")
-        tokens_pos = clip.tokenize(positive_prompt)
-        cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
+        tokens_pos = self._clip.tokenize(positive_prompt)
+        cond_pos = self._clip.encode_from_tokens_scheduled(tokens_pos)
 
-        tokens_neg = clip.tokenize(negative_prompt)
-        cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
+        tokens_neg = self._clip.tokenize(negative_prompt)
+        cond_neg = self._clip.encode_from_tokens_scheduled(tokens_neg)
 
         del tokens_pos
         del tokens_neg
         torch.cuda.empty_cache()
 
         # Run preprocessor
-        if flow.skip_openpose:
+        if self._flow.skip_openpose:
             logging.info("Skipping OpenPose processing as per configuration.")
         else:
-            flow.openpose_pose.save_tensor = lambda img, s=steps: self.save_image(img, "openpose", s)
+            self._flow.openpose_pose.save_tensor = lambda img, s=steps: self.save_image(img, "openpose", s)
 
             # Apply ControlNet with OpenPose
-            cond_pos, cond_neg = flow.apply_control_net.conditionals(
-                flow.openpose_pose, cond_pos, cond_neg, skip_layers_model.vae
+            cond_pos, cond_neg = self._flow.apply_control_net.conditionals(
+                self._flow.openpose_pose, cond_pos, cond_neg, skip_layers_model.vae
             )
 
-        if flow.skip_canny:
+        if self._flow.skip_canny:
             logging.info("Skipping Canny processing as per configuration.")
         else:
-            flow.canny_edge.save_tensor = lambda img, s=steps: self.save_image(img, "canny", s)
+            self._flow.canny_edge.save_tensor = lambda img, s=steps: self.save_image(img, "canny", s)
 
             # Apply ControlNet with Canny
-            cond_pos, cond_neg = flow.apply_control_net.conditionals(
-                flow.canny_edge, cond_pos, cond_neg, skip_layers_model.vae
+            cond_pos, cond_neg = self._flow.apply_control_net.conditionals(
+                self._flow.canny_edge, cond_pos, cond_neg, skip_layers_model.vae
             )
 
-        latent_image = flow.empty_latent.latent
+        latent_image = self._flow.empty_latent.latent
 
-        for sampler_idx, current_sampler in enumerate(flow.simple_k_sampler):
+        for sampler_idx, current_sampler in enumerate(self._flow.simple_k_sampler):
             logging.info("Running Sampler %d...", sampler_idx)
 
             latent_image = current_sampler.process(
@@ -113,13 +118,13 @@ class Flow(AbsFlow):
             # Note: Arguments might vary slightly depending on version, checking signature would be good.
             # Assuming standard arguments based on common usage.
 
-            face_arguments = flow.face_detailer.to_dict()
+            face_arguments = self._flow.face_detailer.to_dict()
 
             face_arguments.update(
                 {
                     "image": input_image,
-                    "model": skip_layers_model.get_model(flow.face_detailer.use_tune),
-                    "clip": clip,
+                    "model": skip_layers_model.get_model(self._flow.face_detailer.use_tune),
+                    "clip": self._clip,
                     "vae": skip_layers_model.vae,
                     "positive": cond_pos,
                     "negative": cond_neg,
@@ -144,7 +149,7 @@ class Flow(AbsFlow):
             self.save_image(mask_img_tensor, "face-mask", steps)
             return result_images
 
-        detailed_image: torch.Tensor = flow.rotator.rotate_image(images, detailer_func)
+        detailed_image: torch.Tensor = self._flow.rotator.rotate_image(images, detailer_func)
 
         self.save_image(detailed_image, "output", steps, False)
 

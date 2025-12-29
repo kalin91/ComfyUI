@@ -10,6 +10,7 @@ import numpy as np
 from segment_anything.build_sam import Sam
 import comfy.model_management
 from comfy_extras.nodes_sd3 import SkipLayerGuidanceSD3
+from comfy_extras.nodes_images import ResizeAndPadImage
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
 from comfy.sd import load_checkpoint_guess_config, VAE
 from comfy.model_patcher import ModelPatcher
@@ -377,14 +378,25 @@ class CannyEdge(ControlNetImgPreprocessor):
 
     def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
         """Processes the image tensor using Canny edge detector."""
+        cnet_height, cnet_width = cnet_img.shape[1], cnet_img.shape[2]
 
-        return aux_utils.common_annotator_call(
+        res = aux_utils.common_annotator_call(
             CannyDetector(),
             cnet_img,
             low_threshold=self.low_threshold,
             high_threshold=self.high_threshold,
             resolution=self.resolution,
         )
+        # Resize to match ControlNet input size if needed
+        if (res.shape[2], res.shape[3]) != (cnet_height, cnet_width):
+            res = ResizeAndPadImage().resize_and_pad(
+                res,
+                cnet_width,
+                cnet_height,
+                "white",
+                "lanczos",
+            )[0]
+        return res
 
     def __init__(
         self,

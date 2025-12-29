@@ -83,10 +83,14 @@ class Model:
         filepath: str,
     ):
         """Initializes the Flow instance by loading data from a JSON file."""
-
         assert os.path.exists(filepath), f"Flow file {filepath} does not exist."
         logging.info("Loading flow from %s", filepath)
-        with open(filepath, "r", encoding="utf-8") as file:
+        self._file_path = filepath
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Reloads the flow data from the JSON file."""
+        with open(self._file_path, "r", encoding="utf-8") as file:
             json_props = json.load(file)
         self._positive = json_props["positive"]
         self._negative = json_props["negative"]

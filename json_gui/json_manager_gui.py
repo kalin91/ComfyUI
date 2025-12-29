@@ -161,6 +161,28 @@ class JSONManagerApp:
 
         self._flow_body = value
 
+    @property
+    def flow_instance(self) -> Optional[gui_utils.AbsFlow]:
+        """Get the flow instance."""
+        return self._flow_instance
+
+    @flow_instance.setter
+    def flow_instance(self, instance: gui_utils.AbsFlow) -> None:
+        """Set the flow instance."""
+        assert isinstance(instance, gui_utils.AbsFlow), "flow_instance must be an instance of AbsFlow"
+        self._flow_instance = instance
+
+    @flow_instance.deleter
+    def flow_instance(self) -> None:
+        """Delete the flow instance."""
+        self._flow_instance = None
+        # Clean up VRAM to prevent OOM on repeated executions
+        comfy.model_management.unload_all_models()
+        comfy.model_management.soft_empty_cache()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
     @flow_body.deleter
     def flow_body(self) -> None:
         """Delete the flow body."""
@@ -181,8 +203,8 @@ class JSONManagerApp:
         y = (screen_height - window_height) // 2
         root.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
-        self.current_file: str | None = None
-
+        self.current_file: Optional[str] = None
+        self._flow_instance: Optional[gui_utils.AbsFlow] = None
         self._setup_ui()
         self._refresh_folder_list()
 
@@ -503,6 +525,7 @@ class JSONManagerApp:
             # Clear previous data
             self.json_editor.load_data({}, {"props": {}})
             self.current_file = None
+            del self.flow_instance
             self._mark_changes(False)
             self.status_var.set(f"Selected folder: {foldername}")
             self.image_viewer.clear()
@@ -531,20 +554,37 @@ class JSONManagerApp:
         assert body is not None, "Flow body is not set"
 
         filepath = os.path.join(gui_utils.get_main_images_path(), foldername, filename)
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            self.json_editor.load_data(data, body)
-            self.current_file = filepath
-            self._mark_changes(False)
-            self.status_var.set(f"Loaded: {filename}")
-            self.image_viewer.clear()
-        except json.JSONDecodeError as e:
-            messagebox.showerror("JSON Error", f"Failed to parse JSON:\n{e}")
-            logging.exception("Failed to parse JSON file %s", filepath)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load file:\n{e}")
-            logging.exception("Failed to load file %s", filepath)
+
+        def load_file() -> None:
+            """Load the selected JSON file into the editor and create a flow instance."""
+            try:
+                logging.info("Loading JSON file: %s", filepath)
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.json_editor.load_data(data, body)
+                self.current_file = filepath
+                self._mark_changes(False)
+                self.status_var.set(f"Loaded: {filename}")
+                self.image_viewer.clear()
+                filename_without_ext = os.path.splitext(filename)[0]
+                assert self.flow is not None, "Flow function is not set"
+                assert issubclass(self.flow, gui_utils.AbsFlow), "Flow is not a subclass of AbsFlow"
+                del self.flow_instance
+                logging.info("Creating flow instance for file: %s", filename)
+                self.flow_instance = self._flow(foldername, filename_without_ext)
+            except json.JSONDecodeError as e:
+                messagebox.showerror("JSON Error", f"Failed to parse JSON:\n{e}")
+                logging.exception("Failed to parse JSON file %s", filepath)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load file:\n{e}")
+                logging.exception("Failed to load file %s", filepath)
+        loading_modal.show_loading_modal(
+            self.root,
+            load_file,
+            (),
+            f"Loading JSON File: {filename}...",
+            False,
+        )
 
     def _save_file(self) -> None:
         """Save changes to the current file."""
@@ -633,7 +673,6 @@ class JSONManagerApp:
             return
 
         # Get filename without extension
-        filename = os.path.basename(self.current_file)
         foldername = self.folder_var.get()
         try:
             assert foldername, "Folder name is empty"
@@ -643,21 +682,12 @@ class JSONManagerApp:
             logging.exception("Execution failed")
             raise e
 
-        filename_without_ext = os.path.splitext(filename)[0]
-
-        self.status_var.set(f"Executing with {filename_without_ext}...")
         self.root.update()
 
         def run_flow() -> None:
             """Run the flow function in a separate thread."""
             try:
-                assert self.flow is not None, "Flow function is not set"
-                assert issubclass(self.flow, gui_utils.AbsFlow), "Flow is not a subclass of AbsFlow"
-                flow_inst: gui_utils.AbsFlow = self._flow(
-                    os.path.join(gui_utils.get_main_images_path(), foldername), filename_without_ext
-                )
-
-                image_paths = flow_inst.run(steps)
+                image_paths = self.flow_instance.run(steps)
 
                 if image_paths:
                     self.image_viewer.display_images(image_paths)
@@ -680,7 +710,11 @@ class JSONManagerApp:
                 logging.info("VRAM cleanup completed")
 
         loading_modal.show_loading_modal(
-            self.root, run_flow, (), f"Executing Flow {foldername}: {filename_without_ext}...", True
+            self.root,
+            run_flow,
+            (),
+            f"Executing Flow {self.flow_instance.__class__.__name__}: {self.flow_instance.file_path}...",
+            True,
         )
 
 
