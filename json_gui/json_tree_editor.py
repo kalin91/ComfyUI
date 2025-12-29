@@ -192,8 +192,6 @@ def _create_boolean_entry(
     """Create a boolean entry widget."""
     assert isinstance(value, bool), f"Value for key '{key}' must be a bool in list item '{key}'"
     try:
-        label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-        label.pack(side="left")
         var = tk.BooleanVar(value=value)
         check = ttk.Checkbutton(frame, variable=var, command=notify_change)
         check.pack(side="left", padx=5)
@@ -232,8 +230,6 @@ def _create_file_entry(
         assert "parent" in body[key], f"'parent' not specified for file type key '{key}' in body"
         body_parent = body[key]["parent"]
         assert isinstance(body_parent, str), f"'parent' for file type key '{key}' must be a string"
-        label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-        label.pack(side="left")
         combo = ttk.Combobox(frame, width=57, state="readonly")
         files: list[str]
         folder: str
@@ -284,8 +280,6 @@ def _create_combo_entry(
                 f"Constant '{body[key]['constant']}' not found " f"in constants dictionary for combo type key '{key}'"
             )
             combo_values = COMBO_CONSTANTS[body[key]["constant"]]
-        label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
-        label.pack(side="left")
         combo = ttk.Combobox(frame, width=57, state="readonly")
         combo["values"] = combo_values
         if value in combo_values:
@@ -304,7 +298,6 @@ def _create_combo_entry(
 
 def _create_multiline_text_widget(
     parent: ttk.Widget,
-    frame: ttk.Widget,
     key: str,
     value: Any,
     full_key: str,
@@ -316,8 +309,6 @@ def _create_multiline_text_widget(
     try:
         assert isinstance(value, str), f"Value for key '{key}' must be a string"
         # Multiline text box for positive/negative prompts
-        label = ttk.Label(frame, text=f"{key}:", font=("TkDefaultFont", 10, "bold"))
-        label.pack(anchor="w")
 
         text_frame = ttk.Frame(parent)
         text_frame.pack(fill="x", padx=(indent * 20 + 10, 5), pady=5)
@@ -703,7 +694,7 @@ class JSONTreeEditor(ttk.Frame):
                         item_frame.pack(fill="x", padx=((indent + 1) * 20, 5), pady=2)
 
                         # Item label
-                        item_label = ttk.Label(item_frame, text=f"{key} [{i}]:", font=("TkDefaultFont", 10, "bold"))
+                        item_label = ttk.Label(item_frame, text=f"{key} [{i}]:", font=("TkDefaultFont", 10, "italic"))
                         item_label.pack(side="left")
 
                         # Delete button for this item - pass the list reference
@@ -719,12 +710,12 @@ class JSONTreeEditor(ttk.Frame):
                         if body_type == "object":
                             assert isinstance(item, dict), f"List item '{key}' must be a dict"
                             assert "props" in body[key], f"'props' not specified for key '{key}' in body"
-                            self._build_tree(parent, item, body[key]["props"], item_key, indent + 2)
+                            self._build_tree(parent, item, body[key]["props"], item_key, indent + 3)
                         else:
                             # Primitive types in list - create a temporary body without isArray
                             temp_body = {f"{key}_{i}": {k: v for k, v in body[key].items() if k != "isArray"}}
                             temp_body[f"{key}_{i}"]["isArray"] = False
-                            self._build_tree(parent, {f"{key}_{i}": item}, temp_body, item_key, indent + 1)
+                            self._build_tree(parent, {f"{key}_{i}": item}, temp_body, item_key, indent + 3)
                 elif body_type == "object":
                     assert isinstance(value, dict), f"Value for key '{key}' must be a dict"
                     assert "props" in body[key], f"'props' not specified for key '{key}' in body"
@@ -732,76 +723,80 @@ class JSONTreeEditor(ttk.Frame):
                     label = ttk.Label(frame, text=f"▼ {key}:", font=("TkDefaultFont", 10, "bold"))
                     label.pack(anchor="w")
                     self._build_tree(parent, value, body[key]["props"], full_key, indent + 1)
-                elif body_type == "bool":
-                    _create_boolean_entry(
-                        frame,
-                        key,
-                        value,
-                        full_key,
-                        self._notify_change,
-                        self.boolean_vars,
-                    )
-                elif body_type == "multiline_string":
-                    _create_multiline_text_widget(
-                        parent,
-                        frame,
-                        key,
-                        value,
-                        full_key,
-                        indent,
-                        self._on_text_modified,
-                        self.text_entries,
-                    )
-
-                elif body_type in ("string", "float", "int"):
-                    label = ttk.Label(frame, text=f"{key}:", width=25, anchor="e")
+                else:
+                    label_font: tuple = ("TkDefaultFont", 10)
+                    if indent == 0:
+                        label_font = label_font + ("bold",)
+                    label = ttk.Label(frame, text=f"{key}:", font=label_font)
                     label.pack(side="left")
-                    if body_type == "string":
-                        _create_string_entry(
+
+                    if body_type == "bool":
+                        _create_boolean_entry(
                             frame,
                             key,
                             value,
                             full_key,
                             self._notify_change,
-                            self.string_entries,
+                            self.boolean_vars,
                         )
-                    elif body_type in ("int", "float"):
-                        _create_numeric_entry(
+                    elif body_type == "multiline_string":
+                        _create_multiline_text_widget(
+                            parent,
+                            key,
+                            value,
+                            full_key,
+                            indent,
+                            self._on_text_modified,
+                            self.text_entries,
+                        )
+
+                    elif body_type in ("string", "float", "int"):
+                        if body_type == "string":
+                            _create_string_entry(
+                                frame,
+                                key,
+                                value,
+                                full_key,
+                                self._notify_change,
+                                self.string_entries,
+                            )
+                        elif body_type in ("int", "float"):
+                            _create_numeric_entry(
+                                frame,
+                                key,
+                                value,
+                                self.register,
+                                self._notify_change,
+                                body,
+                                body_type,
+                                full_key,
+                                self.int_entries,
+                                self.float_entries,
+                            )
+                        else:
+                            raise ValueError(f"Unsupported body type: {body_type}")
+                    elif body_type == "file":
+                        _create_file_entry(
                             frame,
                             key,
                             value,
-                            self.register,
-                            self._notify_change,
-                            body,
-                            body_type,
                             full_key,
-                            self.int_entries,
-                            self.float_entries,
+                            body,
+                            self._notify_change,
+                            self.file_entries,
+                        )
+                    elif body_type == "combo":
+                        _create_combo_entry(
+                            frame,
+                            key,
+                            value,
+                            full_key,
+                            body,
+                            self._notify_change,
+                            self.combo_entries,
                         )
                     else:
                         raise ValueError(f"Unsupported body type: {body_type}")
-                elif body_type == "file":
-                    _create_file_entry(
-                        frame,
-                        key,
-                        value,
-                        full_key,
-                        body,
-                        self._notify_change,
-                        self.file_entries,
-                    )
-                elif body_type == "combo":
-                    _create_combo_entry(
-                        frame,
-                        key,
-                        value,
-                        full_key,
-                        body,
-                        self._notify_change,
-                        self.combo_entries,
-                    )
-                else:
-                    raise ValueError(f"Unsupported body type: {body_type}")
         except Exception as e:
             messagebox.showerror("Error", f"Error building JSON tree at prefix '{prefix}':\n{e}")
             logging.exception("Error building JSON tree at prefix '%s': %s", prefix, e)
