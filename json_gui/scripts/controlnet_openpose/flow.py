@@ -49,25 +49,30 @@ class Flow(AbsFlow):
         tokens_neg = clip.tokenize(negative_prompt)
         cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
 
+        del tokens_pos
+        del tokens_neg
+        torch.cuda.empty_cache()
+
         # Run preprocessor
         if flow.skip_openpose:
-            cond_pos_cnet = cond_pos
-            cond_neg_cnet = cond_neg
             logging.info("Skipping OpenPose processing as per configuration.")
         else:
-            pose_image_tensor = flow.openpose_pose.tensor()
+            flow.openpose_pose.save_tensor = lambda img, s=steps: self.save_image(img, "openpose", s)
 
-            self.save_image(pose_image_tensor, "pose", steps)
-
-            # 7. Apply ControlNet Advanced
-            cond_pos_cnet, cond_neg_cnet = flow.apply_control_net.conditionals(
-                cond_pos, cond_neg, pose_image_tensor, skip_layers_model.vae
+            # Apply ControlNet with OpenPose
+            cond_pos, cond_neg = flow.apply_control_net.conditionals(
+                flow.openpose_pose, cond_pos, cond_neg, skip_layers_model.vae
             )
 
-            del pose_image_tensor  # Free memory
-            del tokens_pos
-            del tokens_neg
-            torch.cuda.empty_cache()
+        if flow.skip_canny:
+            logging.info("Skipping Canny processing as per configuration.")
+        else:
+            flow.canny_edge.save_tensor = lambda img, s=steps: self.save_image(img, "canny", s)
+
+            # Apply ControlNet with Canny
+            cond_pos, cond_neg = flow.apply_control_net.conditionals(
+                flow.canny_edge, cond_pos, cond_neg, skip_layers_model.vae
+            )
 
         latent_image = flow.empty_latent.latent
 
@@ -75,7 +80,7 @@ class Flow(AbsFlow):
             logging.info("Running Sampler %d...", sampler_idx)
 
             latent_image = current_sampler.process(
-                latent_image, skip_layers_model.get_model(current_sampler.use_tune), cond_pos_cnet, cond_neg_cnet
+                latent_image, skip_layers_model.get_model(current_sampler.use_tune), cond_pos, cond_neg
             )
 
             # Decode
@@ -116,8 +121,8 @@ class Flow(AbsFlow):
                     "model": skip_layers_model.get_model(flow.face_detailer.use_tune),
                     "clip": clip,
                     "vae": skip_layers_model.vae,
-                    "positive": cond_pos_cnet,
-                    "negative": cond_neg_cnet,
+                    "positive": cond_pos,
+                    "negative": cond_neg,
                     "segm_detector_opt": None,  # Not using segm detector here
                     "detailer_hook": None,
                 }

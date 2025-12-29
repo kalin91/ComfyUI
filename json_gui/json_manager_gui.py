@@ -202,7 +202,7 @@ class JSONManagerApp:
 
         # Steps input
         ttk.Label(controls_frame, text="Steps:").pack(side="left", padx=(20, 5))
-        self.steps_var = tk.StringVar(value="10")
+        self.steps_var = tk.StringVar(value="20")
         steps_entry = ttk.Entry(controls_frame, textvariable=self.steps_var, width=10)
         steps_entry.pack(side="left", padx=(0, 10))
 

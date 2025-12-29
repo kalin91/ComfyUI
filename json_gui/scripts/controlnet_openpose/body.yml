@@ -8,10 +8,17 @@ props:
   skip_openpose:
     type: bool
     isArray: false
+  skip_canny:
+    type: bool
+    isArray: false
   openpose_pose:
     type: object
     isArray: false
     props:
+      controlnet_path:
+        type: file
+        isArray: false
+        parent: controlnet
       image_name:
         type: file
         isArray: false
@@ -34,7 +41,7 @@ props:
       scale_stick_for_xinsr_cn:
         type: bool
         isArray: false
-  apply_control_net:
+  canny_edge:
     type: object
     isArray: false
     props:
@@ -42,6 +49,30 @@ props:
         type: file
         isArray: false
         parent: controlnet
+      image_name:
+        type: file
+        isArray: false
+        parent: input
+      low_threshold:
+        type: int
+        isArray: false
+        min: 0
+        max: 255
+      high_threshold:
+        type: int
+        isArray: false
+        min: 0
+        max: 255
+      resolution:
+        type: int
+        isArray: false
+        min: 16
+        max: 16384
+        step: 16        
+  apply_control_net:
+    type: object
+    isArray: false
+    props:
       strength:
         type: float
         isArray: false

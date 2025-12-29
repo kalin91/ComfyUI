@@ -3,7 +3,8 @@
 import inspect
 import os
 import logging
-from typing import Any, Callable
+from abc import ABC, abstractmethod
+from typing import Any, Callable, Optional
 import torch
 import numpy as np
 from segment_anything.build_sam import Sam
@@ -15,12 +16,72 @@ from comfy.model_patcher import ModelPatcher
 from comfy.controlnet import load_controlnet
 from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.open_pose import OpenposeDetector
+from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.canny import CannyDetector
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
 from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
+from nodes import ControlNetApplyAdvanced
 import folder_paths
 import node_helpers
 from PIL import Image, ImageOps, ImageSequence
+
+
+class ControlNetImgPreprocessor(ABC):
+    """Abstract base class for ControlNet image preprocessors."""
+
+    @property
+    @abstractmethod
+    def controlnet_path(self) -> str:
+        """Returns the ControlNet path."""
+
+    @property
+    def save_tensor(self) -> Optional[Callable[[torch.Tensor], None]]:
+        """Returns a function to save the tensor."""
+        return self._save_tensor
+
+    @save_tensor.setter
+    def save_tensor(self, value: Callable[[torch.Tensor], None]) -> None:
+        """Sets the function to save the tensor."""
+        assert callable(value), "save_tensor must be a callable function."
+        self._save_tensor = value
+
+    def tensor(self) -> torch.Tensor:
+        """Processes the image and returns a tensor."""
+        res = self._tensor_impl(self._controlnet_img)
+        if self._save_tensor:
+            self._save_tensor(res)
+        return res
+
+    @abstractmethod
+    def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
+        """Implementation-specific tensor processing."""
+
+    def __init__(self, image_name: str) -> None:
+        assert image_name, "Image name must be provided for ControlNetImgPreprocessor."
+        self._save_tensor: Optional[Callable[[torch.Tensor], None]] = None
+        logging.info("Loading ControlNet Image...")
+        input_folder = folder_paths.get_input_directory()
+        image_path = os.path.join(input_folder, image_name)
+        img = node_helpers.pillow(Image.open, image_path)
+
+        # Process image to tensor (similar to LoadImage node)
+        output_images = []
+        for i in ImageSequence.Iterator(img):
+            i = node_helpers.pillow(ImageOps.exif_transpose, i)
+            if i.mode == "I":
+                i = i.point(lambda i: i * (1 / 255))
+            image = i.convert("RGB")
+            image = np.array(image).astype(np.float32) / 255.0
+            image = torch.from_numpy(image)[None,]
+            output_images.append(image)
+
+        if len(output_images) > 1:
+            # If multiple frames, stack them? For now assume single image as per workflow
+            img_tensor = torch.cat(output_images, dim=0)
+        else:
+            img_tensor = output_images[0]
+
+        self._controlnet_img = img_tensor
 
 
 class SimpleKSampler:
@@ -174,11 +235,6 @@ class ApplyControlNet:
     """Returns the ControlNet application parameters."""
 
     @property
-    def controlnet_path(self) -> str:
-        """Returns the ControlNet path."""
-        return self._controlnet_path
-
-    @property
     def strength(self) -> float:
         """Returns the strength value."""
         return self._strength
@@ -193,53 +249,47 @@ class ApplyControlNet:
         """Returns the end percentage value."""
         return self._end_percentage
 
-    def conditionals(self, cond_pos: Any, cond_neg: Any, pose_image_tensor: torch.Tensor, vae: Any) -> tuple[Any, Any]:
+    def conditionals(
+        self, ctrlnet_img_gen: ControlNetImgPreprocessor, cond_pos: Any, cond_neg: Any, vae: Any
+    ) -> tuple[Any, Any]:
         """Returns placeholder conditionals."""
 
+        image_tensor: torch.Tensor = ctrlnet_img_gen.tensor()
+
         logging.info("Loading ControlNet...")
-        controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self.controlnet_path)
+        controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", ctrlnet_img_gen.controlnet_path)
         controlnet = load_controlnet(controlnet_full_path)
 
-        if self._strength == 0:
-            cond_pos_cnet = cond_pos
-            cond_neg_cnet = cond_neg
-        else:
-            control_hint = pose_image_tensor.movedim(-1, 1)
-            cnets = {}
+        res = ControlNetApplyAdvanced().apply_controlnet(
+            cond_pos,
+            cond_neg,
+            controlnet,
+            image_tensor,
+            self._strength,
+            self._start_percentage,
+            self._end_percentage,
+            vae,
+        )
 
-            out = []
-            for conditioning in [cond_pos, cond_neg]:
-                c = []
-                for t in conditioning:
-                    d = t[1].copy()
+        del image_tensor
+        del controlnet
+        torch.cuda.empty_cache()
 
-                    prev_cnet = d.get("control", None)
-                    if prev_cnet in cnets:
-                        c_net = cnets[prev_cnet]
-                    else:
-                        c_net = controlnet.copy().set_cond_hint(
-                            control_hint, self.strength, (self.start_percentage, self.end_percentage), vae=vae
-                        )
-                        c_net.set_previous_controlnet(prev_cnet)
-                        cnets[prev_cnet] = c_net
+        return res
 
-                    d["control"] = c_net
-                    d["control_apply_to_uncond"] = False
-                    n = [t[0], d]
-                    c.append(n)
-                out.append(c)
-            cond_pos_cnet, cond_neg_cnet = out[0], out[1]
-        return cond_pos_cnet, cond_neg_cnet
-
-    def __init__(self, strength: float, start_percentage: float, end_percentage: float, controlnet_path: str):
+    def __init__(self, strength: float, start_percentage: float, end_percentage: float):
         self._strength = strength
         self._start_percentage = start_percentage
         self._end_percentage = end_percentage
-        self._controlnet_path = controlnet_path
 
 
-class OpenPosePose:
+class OpenPosePose(ControlNetImgPreprocessor):
     """A class representing OpenPose pose settings."""
+
+    @property
+    def controlnet_path(self) -> str:
+        """Returns the ControlNet path."""
+        return self._controlnet_path
 
     @property
     def detect_body(self) -> bool:
@@ -266,7 +316,7 @@ class OpenPosePose:
         """Returns the OpenPose resolution."""
         return self._resolution
 
-    def tensor(self) -> torch.Tensor:
+    def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
         """Processes the image tensor using OpenPose preprocessor."""
         # Initialize OpenPose Detector
         openpose_model = OpenposeDetector.from_pretrained().to(comfy.model_management.get_torch_device())
@@ -274,7 +324,7 @@ class OpenPosePose:
         # Run preprocessor
         return aux_utils.common_annotator_call(
             lambda image, **kwargs: openpose_model(image, **kwargs)[0],
-            self._openpose_image,
+            cnet_img,
             include_hand=self.detect_hands,
             include_face=self.detect_face,
             include_body=self.detect_body,
@@ -291,37 +341,64 @@ class OpenPosePose:
         detect_face: bool,
         scale_stick_for_xinsr_cn: bool,
         resolution: int,
+        controlnet_path: str,
     ):
-        assert image_name, "Image name must be provided for OpenPosePose."
+        super().__init__(image_name)
         self._detect_body = detect_body
         self._detect_hands = detect_hands
         self._detect_face = detect_face
         self._scale_stick_for_xinsr_cn = scale_stick_for_xinsr_cn
         self._resolution = resolution
+        self._controlnet_path = controlnet_path
 
-        logging.info("Loading OpenPose Image...")
-        input_folder = folder_paths.get_input_directory()
-        image_path = os.path.join(input_folder, image_name)
-        img = node_helpers.pillow(Image.open, image_path)
 
-        # Process image to tensor (similar to LoadImage node)
-        output_images = []
-        for i in ImageSequence.Iterator(img):
-            i = node_helpers.pillow(ImageOps.exif_transpose, i)
-            if i.mode == "I":
-                i = i.point(lambda i: i * (1 / 255))
-            image = i.convert("RGB")
-            image = np.array(image).astype(np.float32) / 255.0
-            image = torch.from_numpy(image)[None,]
-            output_images.append(image)
+class CannyEdge(ControlNetImgPreprocessor):
+    """A class representing Canny edge detector settings."""
 
-        if len(output_images) > 1:
-            # If multiple frames, stack them? For now assume single image as per workflow
-            img_tensor = torch.cat(output_images, dim=0)
-        else:
-            img_tensor = output_images[0]
+    @property
+    def controlnet_path(self) -> str:
+        """Returns the ControlNet path."""
+        return self._controlnet_path
 
-        self._openpose_image = img_tensor
+    @property
+    def low_threshold(self) -> int:
+        """Returns the low threshold value."""
+        return self._low_threshold
+
+    @property
+    def high_threshold(self) -> int:
+        """Returns the high threshold value."""
+        return self._high_threshold
+
+    @property
+    def resolution(self) -> int:
+        """Returns the detection resolution."""
+        return self._resolution
+
+    def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
+        """Processes the image tensor using Canny edge detector."""
+
+        return aux_utils.common_annotator_call(
+            CannyDetector(),
+            cnet_img,
+            low_threshold=self.low_threshold,
+            high_threshold=self.high_threshold,
+            resolution=self.resolution,
+        )
+
+    def __init__(
+        self,
+        image_name: str,
+        low_threshold: int,
+        high_threshold: int,
+        resolution: int,
+        controlnet_path: str,
+    ):
+        super().__init__(image_name)
+        self._low_threshold = low_threshold
+        self._high_threshold = high_threshold
+        self._resolution = resolution
+        self._controlnet_path = controlnet_path
 
 
 class FaceDetailer(SimpleKSampler):

@@ -5,6 +5,7 @@ import json
 import logging
 from json_gui.mimic_classes import (
     OpenPosePose,
+    CannyEdge,
     ApplyControlNet,
     EmptyLatent,
     SimpleKSampler,
@@ -33,9 +34,19 @@ class Model:
         return self._skip_openpose
 
     @property
+    def skip_canny(self) -> bool:
+        """Returns whether to skip canny processing."""
+        return self._skip_canny
+
+    @property
     def openpose_pose(self) -> OpenPosePose:
         """Returns the OpenPosePose instance."""
         return self._openpose_pose
+
+    @property
+    def canny_edge(self) -> CannyEdge:
+        """Returns the CannyEdge instance."""
+        return self._canny_edge
 
     @property
     def apply_control_net(self) -> ApplyControlNet:
@@ -80,7 +91,9 @@ class Model:
         self._positive = json_props["positive"]
         self._negative = json_props["negative"]
         self._skip_openpose = json_props["skip_openpose"]
+        self._skip_canny = json_props["skip_canny"]
         self._openpose_pose = OpenPosePose(**json_props["openpose_pose"])
+        self._canny_edge = CannyEdge(**json_props["canny_edge"])
         self._apply_control_net = ApplyControlNet(**json_props["apply_control_net"])
         self._empty_latent = EmptyLatent(**json_props["empty_latent"])
         self._simple_k_sampler = [SimpleKSampler(**s) for s in json_props["simple_k_sampler"]]
