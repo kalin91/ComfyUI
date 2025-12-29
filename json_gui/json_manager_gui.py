@@ -578,6 +578,7 @@ class JSONManagerApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load file:\n{e}")
                 logging.exception("Failed to load file %s", filepath)
+
         loading_modal.show_loading_modal(
             self.root,
             load_file,
@@ -661,6 +662,11 @@ class JSONManagerApp:
         """Execute the main function with the selected JSON."""
         if not self.current_file:
             messagebox.showwarning("Warning", "No file selected")
+            return
+
+        if not self.flow_instance:
+            messagebox.showwarning("Warning", "Flow instance is not created, refreshing the file")
+            self._on_file_selected()
             return
 
         if not self._check_unsaved_changes():

@@ -1,5 +1,6 @@
 """Script to run a ControlNet flow with Triple CLIP and FaceDetailer integration."""
 
+import gc
 import inspect
 import logging
 
@@ -7,6 +8,7 @@ import torch
 import comfy.sd
 import folder_paths
 from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer
+from comfy.model_management import unload_all_models, soft_empty_cache
 from json_gui.scripts.controlnet_openpose.model import Model
 from json_gui.utils import AbsFlow
 from comfy_extras.nodes_mask import MaskToImage
@@ -20,10 +22,35 @@ T5_PATH = "sd35m/t5xxl_fp16.safetensors"
 class Flow(AbsFlow):
     """ControlNet OpenPose Flow implementation."""
 
+    @property
+    def flow(self) -> Model:
+        """Returns the Model instance representing the flow."""
+        return self._flow
+
+    @flow.deleter
+    def flow(self) -> None:
+        """Deletes the Model instance and frees resources."""
+        del self._flow
+        unload_all_models()
+        soft_empty_cache()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    @flow.setter
+    def flow(self, value: Model) -> None:
+        """Sets the Model instance."""
+        self._flow = value
+
     def __init__(self, file_path: str, file_name: str) -> None:
         """Initializes the Flow with specific file paths."""
         super().__init__(file_path, file_name)
-        self._flow: Model = Model(self.json_path)
+        self._steps: int = 0
+
+        def save_call(i: torch.Tensor, n: str) -> torch.Tensor:
+            return self.save_image(i, n, self._steps)
+
+        self._flow: Model = Model(self.json_path, save_call)
 
         # 2. Load Triple CLIP
         logging.info("Loading CLIPs...")
@@ -39,7 +66,9 @@ class Flow(AbsFlow):
     def _run_impl(self, steps: int) -> list[str]:
         """Main function to run the ControlNet flow."""
 
-        self._flow.refresh()
+        self._steps = steps
+        del self.flow
+        self.flow = Model()
 
         skip_layers_model = self._flow.skip_layers_model
 
@@ -58,26 +87,10 @@ class Flow(AbsFlow):
         del tokens_neg
         torch.cuda.empty_cache()
 
-        # Run preprocessor
-        if self._flow.skip_openpose:
-            logging.info("Skipping OpenPose processing as per configuration.")
-        else:
-            self._flow.openpose_pose.save_tensor = lambda img, s=steps: self.save_image(img, "openpose", s)
-
-            # Apply ControlNet with OpenPose
-            cond_pos, cond_neg = self._flow.apply_control_net.conditionals(
-                self._flow.openpose_pose, cond_pos, cond_neg, skip_layers_model.vae
-            )
-
-        if self._flow.skip_canny:
-            logging.info("Skipping Canny processing as per configuration.")
-        else:
-            self._flow.canny_edge.save_tensor = lambda img, s=steps: self.save_image(img, "canny", s)
-
-            # Apply ControlNet with Canny
-            cond_pos, cond_neg = self._flow.apply_control_net.conditionals(
-                self._flow.canny_edge, cond_pos, cond_neg, skip_layers_model.vae
-            )
+        # Run control net conditionings
+        logging.info("Applying ControlNet conditionings...")
+        for cnet in self._flow.apply_control_net:
+            cond_pos, cond_neg = cnet.conditionals(cond_pos, cond_neg, skip_layers_model.vae)
 
         latent_image = self._flow.empty_latent.latent
 

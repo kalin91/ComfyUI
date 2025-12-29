@@ -5,12 +5,6 @@ props:
   negative:
     type: multiline_string
     isArray: false
-  skip_openpose:
-    type: bool
-    isArray: false
-  skip_canny:
-    type: bool
-    isArray: false
   openpose_pose:
     type: object
     isArray: false
@@ -41,6 +35,9 @@ props:
       scale_stick_for_xinsr_cn:
         type: bool
         isArray: false
+      skip:
+        type: bool
+        isArray: false
   canny_edge:
     type: object
     isArray: false
@@ -68,10 +65,13 @@ props:
         isArray: false
         min: 16
         max: 16384
-        step: 16        
+        step: 16
+      skip:
+        type: bool
+        isArray: false
   apply_control_net:
     type: object
-    isArray: false
+    isArray: true
     props:
       strength:
         type: float
@@ -94,6 +94,12 @@ props:
         max: 1.0
         step: 0.001
         format: "%.3f"
+      target:
+        type: combo
+        values:
+          - "canny_edge"
+          - "openpose_pose"
+        isArray: false
   empty_latent:
     type: object
     isArray: false

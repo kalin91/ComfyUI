@@ -3,6 +3,9 @@
 import os
 import json
 import logging
+from typing import Any, Callable, Optional
+
+import torch
 from json_gui.mimic_classes import (
     OpenPosePose,
     CannyEdge,
@@ -18,6 +21,9 @@ from json_gui.mimic_classes import (
 class Model:
     """Class representing a flow loaded from a JSON file.""" ""
 
+    file_path: Optional[str] = None
+    save_call: Optional[Callable[[torch.Tensor, str], None]] = None
+
     @property
     def positive(self) -> str:
         """Returns the positive prompt."""
@@ -29,27 +35,7 @@ class Model:
         return self._negative
 
     @property
-    def skip_openpose(self) -> bool:
-        """Returns whether to skip openpose processing."""
-        return self._skip_openpose
-
-    @property
-    def skip_canny(self) -> bool:
-        """Returns whether to skip canny processing."""
-        return self._skip_canny
-
-    @property
-    def openpose_pose(self) -> OpenPosePose:
-        """Returns the OpenPosePose instance."""
-        return self._openpose_pose
-
-    @property
-    def canny_edge(self) -> CannyEdge:
-        """Returns the CannyEdge instance."""
-        return self._canny_edge
-
-    @property
-    def apply_control_net(self) -> ApplyControlNet:
+    def apply_control_net(self) -> list[ApplyControlNet]:
         """Returns the ApplyControlNet instance."""
         return self._apply_control_net
 
@@ -79,26 +65,51 @@ class Model:
         return self._skip_layers_model
 
     def __init__(
-        self,
-        filepath: str,
-    ):
+        self, filepath: Optional[str] = None, save_call: Optional[Callable[[torch.Tensor, str], None]] = None
+    ) -> None:
         """Initializes the Flow instance by loading data from a JSON file."""
-        assert os.path.exists(filepath), f"Flow file {filepath} does not exist."
-        logging.info("Loading flow from %s", filepath)
-        self._file_path = filepath
-        self.refresh()
+        if filepath is None and self.__class__.file_path is None:
+            raise ValueError("File path must be provided at least once.")
+        if save_call is None and self.__class__.save_call is None:
+            raise ValueError("Save call must be provided at least once.")
+        if filepath is not None:
+            self.__class__.file_path = filepath
+            assert os.path.exists(filepath), f"Flow file {filepath} does not exist."
+            logging.info("Loading flow from %s", filepath)
+        if save_call is not None:
+            self.__class__.save_call = save_call
+        self._file_path: str = self.__class__.file_path
+        self._save_call: Callable[[torch.Tensor, str], None] = self.__class__.save_call
+        self.load_json()
 
-    def refresh(self) -> None:
-        """Reloads the flow data from the JSON file."""
+    def load_json(self) -> None:
+        """Loads the flow data from the JSON file."""
         with open(self._file_path, "r", encoding="utf-8") as file:
-            json_props = json.load(file)
+            json_props: dict[str, Any] = json.load(file)
+        cnet_list = json_props["apply_control_net"]
+        assert isinstance(cnet_list, list), "Expected apply_control_net to be a list."
+        self._apply_control_net = []
+        cnet_dicts = {}
+        for cnet in cnet_list:
+            target_name: str = cnet["target"]
+            assert target_name not in cnet_dicts, f"Duplicate target {target_name} in apply_control_net."
+            assert target_name in json_props, f"Target {target_name} not found in JSON properties."
+            target_dict = json_props.pop(target_name)
+            if target_name == "canny_edge":
+                target_inst = CannyEdge(**target_dict)
+            elif target_name == "openpose_pose":
+                target_inst = OpenPosePose(**target_dict)
+            else:
+                raise ValueError(f"Unknown ControlNet target: {target_name}")
+            if not target_inst:
+                cnet_dicts[target_name] = None
+                continue
+            target_inst.save_tensor = lambda img, name=target_name: self._save_call(img, name)  # pylint: disable=E1102
+            cnet["target"] = target_inst
+            cnet_dicts[target_name] = ApplyControlNet(**cnet)
+        self._apply_control_net.extend([v for v in cnet_dicts.values() if v is not None])
         self._positive = json_props["positive"]
         self._negative = json_props["negative"]
-        self._skip_openpose = json_props["skip_openpose"]
-        self._skip_canny = json_props["skip_canny"]
-        self._openpose_pose = OpenPosePose(**json_props["openpose_pose"])
-        self._canny_edge = CannyEdge(**json_props["canny_edge"])
-        self._apply_control_net = ApplyControlNet(**json_props["apply_control_net"])
         self._empty_latent = EmptyLatent(**json_props["empty_latent"])
         self._simple_k_sampler = [SimpleKSampler(**s) for s in json_props["simple_k_sampler"]]
         self._face_detailer = FaceDetailer(**json_props["face_detailer"])
