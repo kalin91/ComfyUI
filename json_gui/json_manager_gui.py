@@ -177,9 +177,24 @@ class JSONManagerApp:
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill="both", expand=True)
 
-        # Top controls
-        controls_frame = ttk.Frame(main_frame)
-        controls_frame.pack(fill="x", pady=(0, 10))
+        # Top controls with horizontal scroll
+        controls_container = ttk.Frame(main_frame)
+        controls_container.pack(fill="x", pady=(0, 10))
+
+        controls_canvas = tk.Canvas(controls_container, highlightthickness=0, height=35)
+        controls_scrollbar = ttk.Scrollbar(controls_container, orient="horizontal", command=controls_canvas.xview)
+        controls_frame = ttk.Frame(controls_canvas)
+
+        controls_frame.bind(
+            "<Configure>",
+            lambda e: controls_canvas.configure(scrollregion=controls_canvas.bbox("all")),
+        )
+
+        controls_canvas.create_window((0, 0), window=controls_frame, anchor="nw")
+        controls_canvas.configure(xscrollcommand=controls_scrollbar.set)
+
+        controls_scrollbar.pack(side="bottom", fill="x")
+        controls_canvas.pack(side="top", fill="x", expand=True)
 
         # Flow selector
         ttk.Label(controls_frame, text="Flow Folder:").pack(side="left", padx=(0, 5))

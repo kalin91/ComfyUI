@@ -552,9 +552,13 @@ class JSONTreeEditor(ttk.Frame):
         self.h_scrollbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
         self.canvas.configure(xscrollcommand=self.h_scrollbar.set)
 
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.scrollbar.pack(side="right", fill="y")
-        self.h_scrollbar.pack(side="bottom", fill="x")
+        # Use grid layout for proper scrollbar sizing
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.scrollbar.grid(row=0, column=1, sticky="ns")
+        self.h_scrollbar.grid(row=1, column=0, sticky="ew")
 
         # Bind mousewheel only when mouse is over this widget
         bind_frame_scroll_events(self, self.canvas, True)
