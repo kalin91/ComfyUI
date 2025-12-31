@@ -23,7 +23,10 @@ class Flow(AbsFlow):
     def _run_impl(self, steps: int) -> list[str]:
         """Main function to run the ControlNet flow."""
 
-        flow: Model = Model(self.json_path)
+        def save_call(i: torch.Tensor, n: str) -> torch.Tensor:
+            return self.save_image(i, n, steps)
+
+        flow: Model = Model(self.json_path, save_call)
 
         skip_layers_model = flow.skip_layers_model
 
@@ -53,26 +56,10 @@ class Flow(AbsFlow):
         del tokens_neg
         torch.cuda.empty_cache()
 
-        # Run preprocessor
-        if flow.skip_openpose:
-            logging.info("Skipping OpenPose processing as per configuration.")
-        else:
-            flow.openpose_pose.save_tensor = lambda img, s=steps: self.save_image(img, "openpose", s)
-
-            # Apply ControlNet with OpenPose
-            cond_pos, cond_neg = flow.apply_control_net.conditionals(
-                flow.openpose_pose, cond_pos, cond_neg, skip_layers_model.vae
-            )
-
-        if flow.skip_canny:
-            logging.info("Skipping Canny processing as per configuration.")
-        else:
-            flow.canny_edge.save_tensor = lambda img, s=steps: self.save_image(img, "canny", s)
-
-            # Apply ControlNet with Canny
-            cond_pos, cond_neg = flow.apply_control_net.conditionals(
-                flow.canny_edge, cond_pos, cond_neg, skip_layers_model.vae
-            )
+        # Run control net conditionings
+        logging.info("Applying ControlNet conditionings...")
+        for cnet in flow.apply_control_net:
+            cond_pos, cond_neg = cnet.conditionals(cond_pos, cond_neg, skip_layers_model.vae)
 
         latent_image = flow.empty_latent.latent
 

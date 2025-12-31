@@ -10,6 +10,7 @@ import numpy as np
 from segment_anything.build_sam import Sam
 import comfy.model_management
 from comfy_extras.nodes_sd3 import SkipLayerGuidanceSD3
+from comfy_extras.nodes_images import ResizeAndPadImage
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
 from comfy.sd import load_checkpoint_guess_config, VAE
 from comfy.model_patcher import ModelPatcher
@@ -29,10 +30,22 @@ from PIL import Image, ImageOps, ImageSequence
 class ControlNetImgPreprocessor(ABC):
     """Abstract base class for ControlNet image preprocessors."""
 
+    def __new__(cls, image_name: str, skip: bool, **kwargs) -> "ControlNetImgPreprocessor":
+        if skip:
+            logging.info("Skipping ControlNet image preprocessor for %s", image_name)
+            return None  # type: ignore
+        instance = super(ControlNetImgPreprocessor, cls).__new__(cls)
+        return instance
+
     @property
     @abstractmethod
     def controlnet_path(self) -> str:
         """Returns the ControlNet path."""
+
+    @property
+    def skip(self) -> bool:
+        """Returns whether to skip this preprocessor."""
+        return self._skip
 
     @property
     def save_tensor(self) -> Optional[Callable[[torch.Tensor], None]]:
@@ -56,7 +69,10 @@ class ControlNetImgPreprocessor(ABC):
     def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
         """Implementation-specific tensor processing."""
 
-    def __init__(self, image_name: str) -> None:
+    def __init__(self, image_name: str, skip: bool) -> None:
+        """Initializes the ControlNetImgPreprocessor with the given image name."""
+
+        self._skip = skip
         assert image_name, "Image name must be provided for ControlNetImgPreprocessor."
         self._save_tensor: Optional[Callable[[torch.Tensor], None]] = None
         logging.info("Loading ControlNet Image...")
@@ -249,15 +265,18 @@ class ApplyControlNet:
         """Returns the end percentage value."""
         return self._end_percentage
 
-    def conditionals(
-        self, ctrlnet_img_gen: ControlNetImgPreprocessor, cond_pos: Any, cond_neg: Any, vae: Any
-    ) -> tuple[Any, Any]:
+    @property
+    def target(self) -> ControlNetImgPreprocessor:
+        """Returns the target ControlNet image preprocessor."""
+        return self._target
+
+    def conditionals(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
         """Returns placeholder conditionals."""
 
-        image_tensor: torch.Tensor = ctrlnet_img_gen.tensor()
+        image_tensor: torch.Tensor = self._target.tensor()
 
         logging.info("Loading ControlNet...")
-        controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", ctrlnet_img_gen.controlnet_path)
+        controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self._target.controlnet_path)
         controlnet = load_controlnet(controlnet_full_path)
 
         res = ControlNetApplyAdvanced().apply_controlnet(
@@ -277,10 +296,13 @@ class ApplyControlNet:
 
         return res
 
-    def __init__(self, strength: float, start_percentage: float, end_percentage: float):
+    def __init__(
+        self, strength: float, start_percentage: float, end_percentage: float, target: ControlNetImgPreprocessor
+    ):
         self._strength = strength
         self._start_percentage = start_percentage
         self._end_percentage = end_percentage
+        self._target = target
 
 
 class OpenPosePose(ControlNetImgPreprocessor):
@@ -342,8 +364,9 @@ class OpenPosePose(ControlNetImgPreprocessor):
         scale_stick_for_xinsr_cn: bool,
         resolution: int,
         controlnet_path: str,
+        skip: bool,
     ):
-        super().__init__(image_name)
+        super().__init__(image_name, skip)
         self._detect_body = detect_body
         self._detect_hands = detect_hands
         self._detect_face = detect_face
@@ -377,14 +400,25 @@ class CannyEdge(ControlNetImgPreprocessor):
 
     def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
         """Processes the image tensor using Canny edge detector."""
+        cnet_height, cnet_width = cnet_img.shape[1], cnet_img.shape[2]
 
-        return aux_utils.common_annotator_call(
+        res = aux_utils.common_annotator_call(
             CannyDetector(),
             cnet_img,
             low_threshold=self.low_threshold,
             high_threshold=self.high_threshold,
             resolution=self.resolution,
         )
+        # Resize to match ControlNet input size if needed
+        if (res.shape[2], res.shape[3]) != (cnet_height, cnet_width):
+            res = ResizeAndPadImage().resize_and_pad(
+                res,
+                cnet_width,
+                cnet_height,
+                "white",
+                "lanczos",
+            )[0]
+        return res
 
     def __init__(
         self,
@@ -393,8 +427,9 @@ class CannyEdge(ControlNetImgPreprocessor):
         high_threshold: int,
         resolution: int,
         controlnet_path: str,
-    ):
-        super().__init__(image_name)
+        skip: bool,
+    ) -> None:
+        super().__init__(image_name, skip)
         self._low_threshold = low_threshold
         self._high_threshold = high_threshold
         self._resolution = resolution

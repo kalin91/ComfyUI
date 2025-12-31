@@ -87,11 +87,17 @@ class AbsFlow(ABC):
         """Returns the JSON path associated with the flow."""
         return self._json_path
 
-    def __init__(self, path_file: str, filename: str) -> None:
+    @property
+    def file_path(self) -> str:
+        """Returns the file identifier associated with the flow."""
+        return self._file_path
+
+    def __init__(self, file_path: str, filename: str) -> None:
         """Initializes the AbsFlow instance."""
+        self._file_path = file_path
         self._last_saved_to_temp: Optional[bool] = None
         self._created_images: list[str] = []
-        self._json_path = os.path.join(path_file, f"{filename}.json")
+        self._json_path = os.path.join(get_main_images_path(), file_path, f"{filename}.json")
         files, folder = _get_output_files_recursive()
         idx = 0
         if files:
@@ -122,9 +128,8 @@ class AbsFlow(ABC):
     def run(self, steps: int) -> list[str]:
         """Runs the flow and returns a list of created image file paths."""
         # Saving a copy of json file to output directory
-        output_json_path = os.path.join(
-            folder_paths.get_output_directory(), f"{self._file_identifier}.json"
-        )
+        self._created_images.clear()
+        output_json_path = os.path.join(folder_paths.get_output_directory(), f"{self._file_identifier}.json")
         shutil.copy2(self._json_path, output_json_path)
         logging.info("Saved flow JSON to output directory: %s", output_json_path)
         with torch.inference_mode():

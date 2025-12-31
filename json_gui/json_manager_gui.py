@@ -181,7 +181,7 @@ class JSONManagerApp:
         y = (screen_height - window_height) // 2
         root.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
-        self.current_file: str | None = None
+        self.current_file: Optional[str] = None
 
         self._setup_ui()
         self._refresh_folder_list()
@@ -653,9 +653,7 @@ class JSONManagerApp:
             try:
                 assert self.flow is not None, "Flow function is not set"
                 assert issubclass(self.flow, gui_utils.AbsFlow), "Flow is not a subclass of AbsFlow"
-                flow_inst: gui_utils.AbsFlow = self._flow(
-                    os.path.join(gui_utils.get_main_images_path(), foldername), filename_without_ext
-                )
+                flow_inst: gui_utils.AbsFlow = self._flow(foldername, filename_without_ext)
 
                 image_paths = flow_inst.run(steps)
 
