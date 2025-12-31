@@ -4,12 +4,13 @@ import inspect
 import logging
 
 import torch
-import comfy.sd
+from comfy.sd import load_clip
 import folder_paths
 from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import FaceDetailer
 from json_gui.scripts.controlnet_openpose.model import Model
 from json_gui.utils import AbsFlow
 from comfy_extras.nodes_mask import MaskToImage
+import comfy.model_management
 
 # Paths - User to replace these
 CLIP_G_PATH = "sd35m/clip_g.safetensors"
@@ -36,7 +37,7 @@ class Flow(AbsFlow):
         clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_L_PATH)
         clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", T5_PATH)
 
-        clip = comfy.sd.load_clip(
+        clip = load_clip(
             ckpt_paths=[clip_path1, clip_path2, clip_path3],
             embedding_directory=folder_paths.get_folder_paths("embeddings"),
         )
@@ -134,5 +135,9 @@ class Flow(AbsFlow):
         detailed_image: torch.Tensor = flow.rotator.rotate_image(images, detailer_func)
 
         self.save_image(detailed_image, "output", steps, False)
+
+        # Cleanup: unload models and free memory after flow execution
+        comfy.model_management.unload_all_models()
+        comfy.model_management.soft_empty_cache()
 
         logging.info("Done.")

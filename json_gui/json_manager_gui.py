@@ -6,19 +6,19 @@ import json
 import os
 import logging
 from pathlib import Path
-from typing import Any, Callable, Optional, Type
+from typing import Any, Optional, Type
 import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 import yaml
-from PIL import Image, ImageTk
 import torch
 import folder_paths
-import comfy.model_management
 from app.logger import setup_logger
-from json_gui.json_tree_editor import JSONTreeEditor, open_preview
+from json_gui.json_tree_editor import JSONTreeEditor
 from json_gui.scroll_utils import bind_frame_scroll_events
+from json_gui.image_viewer import ImageViewer
 from json_gui import loading_modal, utils as gui_utils
+import comfy.model_management
 from comfy.cli_args import args
 
 
@@ -27,73 +27,6 @@ if logger.hasHandlers():
     logger.handlers.clear()
 
 setup_logger(log_level=args.verbose, use_stdout=args.log_stdout)
-
-
-class ImageViewer(ttk.Frame):
-    """Frame for displaying images."""
-
-    def __init__(self, parent: tk.Widget):
-        super().__init__(parent)
-        self.images: list[ImageTk.PhotoImage] = []  # Keep references
-
-        # Create canvas with scrollbar
-        self.canvas = tk.Canvas(self, highlightthickness=0, bg="#2b2b2b")
-        self.scrollbar_y = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.scrollbar_x = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
-        self.scrollable_frame = ttk.Frame(self.canvas)
-
-        self.scrollable_frame.bind(
-            "<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        )
-
-        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        self.canvas.configure(yscrollcommand=self.scrollbar_y.set, xscrollcommand=self.scrollbar_x.set)
-
-        self.scrollbar_y.pack(side="right", fill="y")
-        self.scrollbar_x.pack(side="bottom", fill="x")
-        self.canvas.pack(side="left", fill="both", expand=True)
-
-        # Bind mousewheel only when mouse is over this widget
-        bind_frame_scroll_events(self, self.canvas, True)
-
-    def display_images(self, image_paths: list[str]) -> None:
-        """Display images from file paths."""
-        self.images.clear()
-        for widget in self.scrollable_frame.winfo_children():
-            widget.destroy()
-
-        for _i, path in enumerate(image_paths):
-            try:
-                img = Image.open(path)
-                # Resize to fit
-                img.thumbnail((400, 400), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(img)
-                self.images.append(photo)
-
-                frame = ttk.Frame(self.scrollable_frame)
-                frame.pack(side="left", padx=10, pady=10)
-
-                label = ttk.Label(frame, image=photo)
-                label.pack()
-
-                name_label = ttk.Label(frame, text=os.path.basename(path), wraplength=400)
-                name_label.pack()
-
-                # if click frame, open image in default viewer
-                for widget in (frame, label, name_label):
-                    callback: Callable[[tk.Event], None] = lambda e, p=path, f=frame: open_preview(p, f)
-                    widget.bind("<Button-1>", callback)
-
-            except Exception as e:
-                error_label = ttk.Label(self.scrollable_frame, text=f"Error loading {path}: {e}")
-                error_label.pack(side="left", padx=10, pady=10)
-                logging.exception("Error loading image %s", path)
-
-    def clear(self) -> None:
-        """Clear all images."""
-        self.images.clear()
-        for widget in self.scrollable_frame.winfo_children():
-            widget.destroy()
 
 
 class JSONManagerApp:
@@ -182,6 +115,7 @@ class JSONManagerApp:
         root.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
         self.current_file: Optional[str] = None
+        self._memory_warning_shown = False
 
         self._setup_ui()
         self._refresh_folder_list()
@@ -236,6 +170,7 @@ class JSONManagerApp:
         self.file_combo.bind("<<ComboboxSelected>>", self._on_file_selected)
 
         ttk.Button(controls_frame, text="Refresh JSONs", command=self._refresh_file_list).pack(side="left", padx=5)
+        ttk.Button(controls_frame, text="Check Memory", command=self._show_memory_details).pack(side="left", padx=5)
 
         # Paned window for editor and images
         paned = ttk.PanedWindow(main_frame, orient="horizontal")
@@ -295,6 +230,7 @@ class JSONManagerApp:
                 return False
 
         ttk.Button(actions_frame, text="Execute", command=self._execute).pack(side="right", padx=5)
+        ttk.Button(actions_frame, text="Clean Memory", command=self._manual_cleanup).pack(side="right", padx=5)
         self.steps_var = tk.IntVar(value=20)
         validate_cmd = (self.root.register(_validate_steps), "%P")
         steps_entry = ttk.Spinbox(
@@ -381,6 +317,8 @@ class JSONManagerApp:
     def _on_close(self) -> None:
         """Handle window close event."""
         if self._check_unsaved_changes():
+            # Final cleanup before closing
+            self._cleanup_vram()
             self.root.destroy()
 
     def _refresh_folder_list(self) -> None:
@@ -648,15 +586,38 @@ class JSONManagerApp:
         self.status_var.set(f"Executing with {filename_without_ext}...")
         self.root.update()
 
-        def run_flow() -> None:
-            """Run the flow function in a separate thread."""
+        def run_flow_direct() -> None:
+            """Run the flow directly in this process."""
             try:
-                assert self.flow is not None, "Flow function is not set"
-                assert issubclass(self.flow, gui_utils.AbsFlow), "Flow is not a subclass of AbsFlow"
-                flow_inst: gui_utils.AbsFlow = self._flow(foldername, filename_without_ext)
+                # Clean up memory before execution
+                self._cleanup_vram()
 
+                # Check memory status before execution
+                if not self._check_memory_available():
+                    raise MemoryError("GPU memory is too fragmented. Please restart the application.")
+
+                # Execute the flow
+                flow_class = self.flow
+                assert flow_class is not None, "Flow class is not set"
+
+                logging.info(
+                    "Executing flow: script=%s, folder=%s, file=%s, steps=%s",
+                    foldername,
+                    foldername,
+                    filename_without_ext,
+                    steps,
+                )
+
+                flow_inst = flow_class(foldername, filename_without_ext)
                 image_paths = flow_inst.run(steps)
 
+                # Clean up after execution
+                self._cleanup_vram()
+
+                # Check memory after execution and warn if fragmented
+                self._check_memory_fragmentation()
+
+                # Display results
                 if image_paths:
                     self.image_viewer.display_images(image_paths)
                     self.status_var.set(f"Execution complete. Generated {len(image_paths)} images.")
@@ -664,22 +625,326 @@ class JSONManagerApp:
                     self.status_var.set("Execution complete. No images generated.")
                     messagebox.showinfo("Info", "Execution completed but no images were generated.")
 
-            except Exception as e:
-                self.status_var.set("Execution failed")
-                raise e
-            finally:
-                # Clean up VRAM to prevent OOM on repeated executions
-                comfy.model_management.unload_all_models()
-                comfy.model_management.soft_empty_cache()
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-                logging.info("VRAM cleanup completed")
+            except MemoryError as e:
+                error_msg = str(e)
+                logging.error("Memory error: %s", error_msg)
+                self.root.after(
+                    0,
+                    lambda msg=error_msg: messagebox.showerror(
+                        "Memory Error", f"{msg}\n\nPlease close and reopen the application."
+                    ),
+                )
+                raise
 
         loading_modal.show_loading_modal(
-            self.root, run_flow, (), f"Executing Flow {foldername}: {filename_without_ext}...", True
+            self.root,
+            run_flow_direct,
+            (),
+            f"Executing Flow {foldername}: {filename_without_ext}...",
+            True,
         )
+
+    def _cleanup_vram(self) -> None:
+        """Clean up VRAM using ComfyUI's memory management."""
+        try:
+            # Use ComfyUI's unload to properly release models
+            comfy.model_management.unload_all_models()
+            comfy.model_management.soft_empty_cache()
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        except Exception as e:
+            logging.warning("Failed to cleanup VRAM: %s", e)
+
+    def _check_memory_available(self, required_gb: float = 10.5) -> bool:
+        """Check if enough contiguous memory is available.
+
+        Args:
+            required_gb: Required memory in GB (default 10.5 for SD3.5)
+
+        Returns:
+            True if memory is available, False if too fragmented
+        """
+        if not torch.cuda.is_available():
+            return True
+
+        try:
+            required_bytes = int(required_gb * 1024 * 1024 * 1024)
+            free_memory = comfy.model_management.get_free_memory()
+            return free_memory >= required_bytes
+        except Exception as e:
+            logging.warning("Failed to check memory: %s", e)
+            return True  # Assume OK if check fails
+
+    def _check_memory_fragmentation(self) -> None:
+        """Check memory fragmentation after execution and warn user if needed."""
+        if not torch.cuda.is_available():
+            return
+
+        try:
+            # Get memory stats
+            stats = torch.cuda.memory_stats()
+            mem_reserved = stats.get("reserved_bytes.all.current", 0)
+            mem_active = stats.get("active_bytes.all.current", 0)
+            free_cuda, _total_cuda = torch.cuda.mem_get_info()
+
+            # Calculate fragmentation: memory reserved but not active
+            fragmented = mem_reserved - mem_active
+            fragmented_gb = fragmented / (1024**3)
+            free_gb = free_cuda / (1024**3)
+
+            logging.info(
+                "Memory status: Free=%.2fGB, Reserved=%.2fGB, Active=%.2fGB, Fragmented=%.2fGB",
+                free_gb,
+                mem_reserved / (1024**3),
+                mem_active / (1024**3),
+                fragmented_gb,
+            )
+
+            # Warn if free memory is low and there's significant fragmentation
+            # Your model needs ~10.5GB, so warn if we have less than 12GB free
+            if free_gb < 12.0 and not self._memory_warning_shown:
+                self._memory_warning_shown = True
+                self.root.after(
+                    0,
+                    lambda: messagebox.showwarning(
+                        "Low Memory Warning",
+                        f"GPU memory is getting low ({free_gb:.1f}GB free).\n\n"
+                        "If the next execution fails, please restart the application.",
+                    ),
+                )
+
+        except Exception as e:
+            logging.warning("Failed to check memory fragmentation: %s", e)
+
+    def _manual_cleanup(self) -> None:
+        """Manually clean up GPU memory."""
+        self.status_var.set("Cleaning memory...")
+        self.root.update()
+
+        self._cleanup_vram()
+
+        # Reset warning flag after manual cleanup
+        self._memory_warning_shown = False
+
+        # Show current memory status
+        if torch.cuda.is_available():
+            try:
+                free_cuda, total_cuda = torch.cuda.mem_get_info()
+                free_gb = free_cuda / (1024**3)
+                total_gb = total_cuda / (1024**3)
+                self.status_var.set(f"Memory cleaned. Free: {free_gb:.1f}GB / {total_gb:.1f}GB")
+                messagebox.showinfo(
+                    "Memory Cleanup",
+                    f"Memory cleanup complete.\n\n"
+                    f"Free GPU Memory: {free_gb:.1f} GB\n"
+                    f"Total GPU Memory: {total_gb:.1f} GB",
+                )
+            except Exception:
+                self.status_var.set("Memory cleaned.")
+        else:
+            self.status_var.set("Memory cleaned (no GPU).")
+
+    def _show_memory_details(self) -> None:
+        """Show detailed GPU memory information in a popup window."""
+        if not torch.cuda.is_available():
+            messagebox.showinfo("Memory Info", "No CUDA GPU available.")
+            return
+
+        try:
+            # Gather all memory information
+            device = torch.cuda.current_device()
+            device_name = torch.cuda.get_device_name(device)
+            device_props = torch.cuda.get_device_properties(device)
+
+            # Basic memory info
+            free_cuda, total_cuda = torch.cuda.mem_get_info()
+            used_cuda = total_cuda - free_cuda
+
+            # PyTorch memory stats
+            stats = torch.cuda.memory_stats(device)
+            mem_allocated = stats.get("allocated_bytes.all.current", 0)
+            mem_reserved = stats.get("reserved_bytes.all.current", 0)
+            mem_active = stats.get("active_bytes.all.current", 0)
+            mem_inactive = mem_reserved - mem_active
+
+            # Peak memory
+            mem_allocated_peak = stats.get("allocated_bytes.all.peak", 0)
+            mem_reserved_peak = stats.get("reserved_bytes.all.peak", 0)
+
+            # Allocation counts
+            num_allocs = stats.get("allocation.all.current", 0)
+            num_allocs_peak = stats.get("allocation.all.peak", 0)
+
+            # Segment info (fragmentation indicator)
+            num_segments = stats.get("segment.all.current", 0)
+            num_segments_peak = stats.get("segment.all.peak", 0)
+            large_pool_allocated = stats.get("allocated_bytes.large_pool.current", 0)
+            small_pool_allocated = stats.get("allocated_bytes.small_pool.current", 0)
+
+            # OOM stats
+            num_ooms = stats.get("num_ooms", 0)
+            num_alloc_retries = stats.get("num_alloc_retries", 0)
+
+            # Calculate fragmentation metrics
+            fragmented = mem_reserved - mem_active
+            fragmentation_pct = (fragmented / mem_reserved * 100) if mem_reserved > 0 else 0
+
+            # ComfyUI loaded models
+            loaded_models_info = ""
+            try:
+                loaded_models = comfy.model_management.current_loaded_models
+                if loaded_models:
+                    loaded_models_info = f"\n{'=' * 50}\n"
+                    loaded_models_info += "COMFYUI LOADED MODELS:\n"
+                    loaded_models_info += f"{'=' * 50}\n"
+                    for i, lm in enumerate(loaded_models):
+                        model_name = (
+                            lm.model.model.__class__.__name__ if hasattr(lm.model, "model") else str(type(lm.model))
+                        )
+                        model_mem = lm.model_memory() / (1024**3)
+                        loaded_models_info += f"  [{i + 1}] {model_name}: {model_mem:.2f} GB\n"
+            except Exception as e:
+                loaded_models_info = f"\n(Could not get loaded models: {e})\n"
+
+            def to_gb(b: int) -> str:
+                return f"{b / (1024**3):.3f} GB"
+
+            def to_mb(b: int) -> str:
+                return f"{b / (1024**2):.1f} MB"
+
+            # Build detailed report
+            report = f"""{'=' * 50}
+GPU MEMORY REPORT
+{'=' * 50}
+
+DEVICE INFO:
+  Name: {device_name}
+  Total Memory: {to_gb(device_props.total_memory)}
+  Compute Capability: {device_props.major}.{device_props.minor}
+  Multi Processors: {device_props.multi_processor_count}
+
+{'=' * 50}
+CUDA MEMORY (Hardware Level):
+{'=' * 50}
+  Total:     {to_gb(total_cuda)}
+  Used:      {to_gb(used_cuda)} ({used_cuda / total_cuda * 100:.1f}%)
+  Free:      {to_gb(free_cuda)} ({free_cuda / total_cuda * 100:.1f}%)
+
+{'=' * 50}
+PYTORCH MEMORY (Software Level):
+{'=' * 50}
+  Allocated (current): {to_gb(mem_allocated)}
+  Allocated (peak):    {to_gb(mem_allocated_peak)}
+  Reserved (current):  {to_gb(mem_reserved)}
+  Reserved (peak):     {to_gb(mem_reserved_peak)}
+
+{'=' * 50}
+FRAGMENTATION ANALYSIS:
+{'=' * 50}
+  Active Memory:       {to_gb(mem_active)}
+  Inactive (cached):   {to_gb(mem_inactive)}
+  Fragmented:          {to_gb(fragmented)}
+  Fragmentation:       {fragmentation_pct:.1f}%
+
+  Memory Segments:     {num_segments} (peak: {num_segments_peak})
+  Active Allocations:  {num_allocs} (peak: {num_allocs_peak})
+
+  Large Pool:          {to_gb(large_pool_allocated)}
+  Small Pool:          {to_mb(small_pool_allocated)}
+
+{'=' * 50}
+HEALTH INDICATORS:
+{'=' * 50}
+  Out of Memory Events: {num_ooms}
+  Allocation Retries:   {num_alloc_retries}
+
+  Status: {'⚠️ HIGH FRAGMENTATION' if fragmentation_pct > 30 else '✅ OK' if fragmentation_pct < 15 else '⚡ MODERATE'}
+
+  Your model needs ~10.5 GB
+  Available free:  {to_gb(free_cuda)}
+  Can load model:  {'✅ YES' if free_cuda > 11 * 1024**3 else '❌ NO - Restart recommended'}
+{loaded_models_info}
+{'=' * 50}
+"""
+
+            # Create a new window with scrollable text
+            detail_window = tk.Toplevel(self.root)
+            detail_window.title("GPU Memory Details")
+            detail_window.geometry("650x700")
+            detail_window.transient(self.root)
+
+            # Text widget with scrollbar
+            text_frame = ttk.Frame(detail_window)
+            text_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+            scrollbar = ttk.Scrollbar(text_frame)
+            scrollbar.pack(side="right", fill="y")
+
+            text_widget = tk.Text(
+                text_frame,
+                wrap="none",
+                font=("Consolas", 10),
+                yscrollcommand=scrollbar.set,
+            )
+            text_widget.pack(side="left", fill="both", expand=True)
+            scrollbar.config(command=text_widget.yview)
+
+            text_widget.insert("1.0", report)
+            text_widget.config(state="disabled")  # Read-only
+
+            # Buttons at bottom
+            btn_frame = ttk.Frame(detail_window)
+            btn_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+            ttk.Button(
+                btn_frame,
+                text="Refresh",
+                command=lambda: self._refresh_memory_window(text_widget),
+            ).pack(side="left", padx=5)
+
+            ttk.Button(
+                btn_frame,
+                text="Clean Memory",
+                command=lambda: [self._cleanup_vram(), self._refresh_memory_window(text_widget)],
+            ).pack(side="left", padx=5)
+
+            ttk.Button(btn_frame, text="Close", command=detail_window.destroy).pack(side="right", padx=5)
+
+        except Exception as e:
+            logging.exception("Failed to get memory details")
+            messagebox.showerror("Error", f"Failed to get memory details:\n{e}")
+
+    def _refresh_memory_window(self, text_widget: tk.Text) -> None:
+        """Refresh the memory details in an existing window."""
+        text_widget.config(state="normal")
+        text_widget.delete("1.0", "end")
+
+        # Regenerate report (simplified version for refresh)
+        try:
+            device = torch.cuda.current_device()
+            free_cuda, total_cuda = torch.cuda.mem_get_info()
+            stats = torch.cuda.memory_stats(device)
+            mem_reserved = stats.get("reserved_bytes.all.current", 0)
+            mem_active = stats.get("active_bytes.all.current", 0)
+            fragmented = mem_reserved - mem_active
+            fragmentation_pct = (fragmented / mem_reserved * 100) if mem_reserved > 0 else 0
+
+            report = f"""QUICK REFRESH - {torch.cuda.get_device_name(device)}
+
+Free: {free_cuda / (1024**3):.2f} GB / {total_cuda / (1024**3):.2f} GB
+Reserved: {mem_reserved / (1024**3):.2f} GB
+Active: {mem_active / (1024**3):.2f} GB
+Fragmentation: {fragmentation_pct:.1f}%
+
+Status: {'⚠️ HIGH FRAGMENTATION' if fragmentation_pct > 30 else '✅ OK' if fragmentation_pct < 15 else '⚡ MODERATE'}
+Can load 10.5GB model: {'✅ YES' if free_cuda > 11 * 1024**3 else '❌ NO'}
+"""
+            text_widget.insert("1.0", report)
+        except Exception as e:
+            text_widget.insert("1.0", f"Error: {e}")
+
+        text_widget.config(state="disabled")
 
 
 def main() -> None:

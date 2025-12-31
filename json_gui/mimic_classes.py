@@ -290,9 +290,10 @@ class ApplyControlNet:
             vae,
         )
 
+        # Note: Don't delete controlnet here - it's copied into conds and
+        # will be managed by ComfyUI's memory system via load_models_gpu()
         del image_tensor
-        del controlnet
-        torch.cuda.empty_cache()
+        comfy.model_management.soft_empty_cache()
 
         return res
 
@@ -340,12 +341,17 @@ class OpenPosePose(ControlNetImgPreprocessor):
 
     def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
         """Processes the image tensor using OpenPose preprocessor."""
+        # Free memory before loading OpenPose detector
+        comfy.model_management.soft_empty_cache()
+
         # Initialize OpenPose Detector
-        openpose_model = OpenposeDetector.from_pretrained().to(comfy.model_management.get_torch_device())
+        openpose_model: OpenposeDetector = OpenposeDetector.from_pretrained().to(
+            comfy.model_management.get_torch_device()
+        )
 
         # Run preprocessor
-        return aux_utils.common_annotator_call(
-            lambda image, **kwargs: openpose_model(image, **kwargs)[0],
+        result = aux_utils.common_annotator_call(
+            lambda image, **kwargs: openpose_model(image, **kwargs)[0],  # noqa: F821
             cnet_img,
             include_hand=self.detect_hands,
             include_face=self.detect_face,
@@ -354,6 +360,12 @@ class OpenPosePose(ControlNetImgPreprocessor):
             xinsr_stick_scaling=self.scale_stick_for_xinsr_cn,
             resolution=self.resolution,
         )
+
+        # Clean up OpenPose model after use
+        del openpose_model
+        comfy.model_management.soft_empty_cache()
+
+        return result
 
     def __init__(
         self,
@@ -622,6 +634,10 @@ class FaceDetailer(SimpleKSampler):
         self._sam_mask_hint_threshold = sam_mask_hint_threshold
         self._sam_mask_hint_use_negative = sam_mask_hint_use_negative
         self._wildcard = wildcard
+
+        # Free memory before loading detection models
+        comfy.model_management.soft_empty_cache()
+
         bbox_provider = UltralyticsDetectorProvider()
         # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
         self._bbox_detector, _c = bbox_provider.doit(bbox_detector)
@@ -730,6 +746,11 @@ class SkipLayers:
     def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
         # 1. Load Model and VAE
         logging.info("Loading Checkpoint...")
+
+        # Free memory before loading the large checkpoint (~10.5GB)
+        comfy.model_management.unload_all_models()
+        comfy.model_management.soft_empty_cache()
+
         ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", self.CHECKPOINT_PATH)
         self._base_model, _a, self._vae, _b = load_checkpoint_guess_config(
             ckpt_path,
