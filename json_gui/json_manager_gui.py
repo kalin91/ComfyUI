@@ -99,6 +99,24 @@ class ImageViewer(ttk.Frame):
 class JSONManagerApp:
     """Main application class."""
 
+    # Update scrollregion and frame width when content or canvas changes
+    def _update_actions_scrollregion(
+        self,
+        parent: ttk.Widget,
+        p_canvas: tk.Canvas,
+        p_frame: ttk.Widget,
+        p_window_id: int,
+        _event: tk.Event | None = None,
+    ) -> None:
+        p_frame.update_idletasks()
+        content_width = p_frame.winfo_reqwidth()
+        canvas_width = p_canvas.winfo_width()
+        # Use the larger of content width or canvas width
+        final_width = max(content_width, canvas_width)
+        p_canvas.itemconfig(p_window_id, width=final_width)
+        p_canvas.configure(scrollregion=(0, 0, final_width, p_frame.winfo_reqheight()))
+        bind_frame_scroll_events(parent, p_canvas, True)
+
     @property
     def flow(self) -> Optional[Type[gui_utils.AbsFlow]]:
         """Get the flow callable."""
@@ -177,9 +195,28 @@ class JSONManagerApp:
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill="both", expand=True)
 
-        # Top controls
-        controls_frame = ttk.Frame(main_frame)
-        controls_frame.pack(fill="x", pady=(0, 10))
+        # Top controls with horizontal scroll
+        controls_container = ttk.Frame(main_frame)
+        controls_container.pack(fill="x", pady=(0, 10))
+
+        controls_canvas = tk.Canvas(controls_container, highlightthickness=0, height=35)
+        controls_scrollbar = ttk.Scrollbar(controls_container, orient="horizontal", command=controls_canvas.xview)
+        controls_frame = ttk.Frame(controls_canvas)
+
+        controls_window_id = controls_canvas.create_window((0, 0), window=controls_frame, anchor="nw")
+        controls_canvas.configure(xscrollcommand=controls_scrollbar.set)
+
+        def controls_scroll_action(
+            e: tk.Event, p=controls_container, c=controls_canvas, f=controls_frame, w=controls_window_id
+        ) -> None:
+            """Update scrollregion and frame width when content or canvas changes."""
+            self._update_actions_scrollregion(p, c, f, w, e)
+
+        controls_frame.bind("<Configure>", controls_scroll_action)
+        controls_canvas.bind("<Configure>", controls_scroll_action)
+
+        controls_scrollbar.pack(side="bottom", fill="x")
+        controls_canvas.pack(side="top", fill="x", expand=True)
 
         # Flow selector
         ttk.Label(controls_frame, text="Flow Folder:").pack(side="left", padx=(0, 5))
@@ -200,17 +237,6 @@ class JSONManagerApp:
 
         ttk.Button(controls_frame, text="Refresh JSONs", command=self._refresh_file_list).pack(side="left", padx=5)
 
-        # Steps input
-        ttk.Label(controls_frame, text="Steps:").pack(side="left", padx=(20, 5))
-        self.steps_var = tk.StringVar(value="20")
-        steps_entry = ttk.Entry(controls_frame, textvariable=self.steps_var, width=10)
-        steps_entry.pack(side="left", padx=(0, 10))
-
-        # Buttons
-        ttk.Button(controls_frame, text="Save", command=self._save_file).pack(side="left", padx=5)
-        ttk.Button(controls_frame, text="Save As", command=self._save_as_file).pack(side="left", padx=5)
-        ttk.Button(controls_frame, text="Execute", command=self._execute).pack(side="left", padx=5)
-
         # Paned window for editor and images
         paned = ttk.PanedWindow(main_frame, orient="horizontal")
         paned.pack(fill="both", expand=True)
@@ -226,15 +252,76 @@ class JSONManagerApp:
         # Right side - Image Viewer
         viewer_frame = ttk.LabelFrame(paned, text="Output Images", padding="5")
 
-        # Clean button at the bottom
-        clean_btn = tk.Button(
-            viewer_frame,
-            text="Clean output Folder",
-            font=("Arial", 8),
-            command=self._clean_output_folder,
-        )
-        clean_btn.pack(side="bottom", anchor="e", pady=2)
+        # Adding a frame for action buttons at the bottom of viewer_frame
+        actions_container = ttk.Frame(viewer_frame)
+        actions_container.pack(side="bottom", fill="x", pady=2)
 
+        actions_canvas = tk.Canvas(actions_container, highlightthickness=0, height=35)
+        actions_scrollbar = ttk.Scrollbar(actions_container, orient="horizontal", command=actions_canvas.xview)
+        actions_frame = ttk.Frame(actions_canvas)
+
+        actions_window_id = actions_canvas.create_window((0, 0), window=actions_frame, anchor="nw")
+        actions_canvas.configure(xscrollcommand=actions_scrollbar.set)
+
+        def actions_scroll_action(
+            e: tk.Event, p=actions_container, c=actions_canvas, f=actions_frame, w=actions_window_id
+        ) -> None:
+            """Update scrollregion and frame width when content or canvas changes."""
+            self._update_actions_scrollregion(p, c, f, w, e)
+
+        actions_frame.bind("<Configure>", actions_scroll_action)
+        actions_canvas.bind("<Configure>", actions_scroll_action)
+
+        actions_scrollbar.pack(side="bottom", fill="x")
+        actions_canvas.pack(side="top", fill="x", expand=True)
+
+        ttk.Button(actions_frame, text="Save", command=self._save_file).pack(side="left", padx=5)
+        ttk.Button(actions_frame, text="Save As", command=self._save_as_file).pack(side="left", padx=5)
+        ttk.Button(
+            actions_frame,
+            text="Clean output Folder",
+            command=self._clean_output_folder,
+        ).pack(side="left", padx=5)
+
+        # Steps input
+        def _validate_steps(new_value: str) -> bool:
+            """Validate steps input to be between 1 and 999."""
+            if new_value == "":
+                return True
+            try:
+                val = int(new_value)
+                return 1 <= val <= 999
+            except ValueError:
+                return False
+
+        ttk.Button(actions_frame, text="Execute", command=self._execute).pack(side="right", padx=5)
+        self.steps_var = tk.IntVar(value=20)
+        validate_cmd = (self.root.register(_validate_steps), "%P")
+        steps_entry = ttk.Spinbox(
+            actions_frame,
+            from_=1,
+            to=999,
+            increment=1,
+            wrap=True,
+            width=10,
+            validate="key",
+            validatecommand=validate_cmd,
+        )
+        steps_entry.pack(side="right", padx=(0, 10))
+        bind_frame_scroll_events(steps_entry, steps_entry)
+        ttk.Label(actions_frame, text="Steps:").pack(side="right", padx=(20, 5))
+
+        def steps_trace_callback(*_args: Any) -> None:
+            """Ensure steps_var is always between 1 and 999."""
+            try:
+                self.steps_var.get()
+                self.steps_var.set(max(1, min(999, self.steps_var.get())))
+            except Exception:
+                logging.exception("Invalid steps value")
+                steps_entry.set(1)
+
+        self.steps_var.trace_add("write", steps_trace_callback)
+        steps_entry.config(textvariable=self.steps_var)
         self.image_viewer = ImageViewer(viewer_frame)
         self.image_viewer.pack(side="top", fill="both", expand=True)
         paned.add(viewer_frame, weight=1)
@@ -540,7 +627,7 @@ class JSONManagerApp:
             return
 
         try:
-            steps = int(self.steps_var.get())
+            steps = self.steps_var.get()
         except ValueError:
             messagebox.showerror("Error", "Steps must be a number")
             return
