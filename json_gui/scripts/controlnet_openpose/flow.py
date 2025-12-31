@@ -67,7 +67,20 @@ class Flow(AbsFlow):
         """Main function to run the ControlNet flow."""
 
         self._steps = steps
+        # Cleanup model components before deleting to ensure proper VRAM release
+        if hasattr(self, "_flow"):
+            if hasattr(self._flow, "skip_layers_model"):
+                self._flow.skip_layers_model.cleanup()
+            if hasattr(self._flow, "face_detailer"):
+                self._flow.face_detailer.cleanup()
+            if hasattr(self._flow, "apply_control_net"):
+                for cnet in self._flow.apply_control_net:
+                    if hasattr(cnet, "cleanup"):
+                        cnet.cleanup()
         del self.flow
+        # Ensure CUDA memory is fully freed before loading new checkpoint
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         self.flow = Model()
 
         skip_layers_model = self._flow.skip_layers_model

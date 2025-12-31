@@ -271,6 +271,13 @@ class ApplyControlNet:
         """Returns the target ControlNet image preprocessor."""
         return self._target
 
+    @target.deleter
+    def target(self) -> None:
+        """Deletes the target ControlNet image preprocessor to free resources."""
+        if hasattr(self._target, "cleanup"):
+            self._target.cleanup()
+        del self._target
+
     def conditionals(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
         """Returns placeholder conditionals."""
 
@@ -306,6 +313,16 @@ class ApplyControlNet:
         self._start_percentage = start_percentage
         self._end_percentage = end_percentage
         self._target = target
+
+    def cleanup(self) -> None:
+        """Cleans up any resources if needed."""
+        logging.info("Cleaning up EmptyLatent resources...")
+        if hasattr(self, "_target"):
+            del self._target
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
 
 class OpenPosePose(ControlNetImgPreprocessor):
@@ -633,6 +650,18 @@ class FaceDetailer(SimpleKSampler):
         # SAMLoader.load_model returns (SAM_MODEL,)
         self._sam_model_opt = sam_loader.load_model(sam_model_opt)[0]
 
+    def cleanup(self) -> None:
+        """Releases SAM and BBOX models to free VRAM."""
+        logging.info("Cleaning up FaceDetailer models...")
+        if hasattr(self, "_sam_model_opt") and isinstance(self._sam_model_opt, Sam):
+            del self._sam_model_opt
+        if hasattr(self, "_bbox_detector"):
+            del self._bbox_detector
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
 
 class Rotator:
     """A class representing image rotation settings."""
@@ -729,6 +758,20 @@ class SkipLayers:
     def vae(self) -> VAE:
         """Returns the VAE."""
         return self._vae
+
+    def cleanup(self) -> None:
+        """Releases the checkpoint models and VAE to free VRAM."""
+        logging.info("Cleaning up SkipLayers models...")
+        if hasattr(self, "_tunned_model"):
+            del self._tunned_model
+        if hasattr(self, "_base_model"):
+            del self._base_model
+        if hasattr(self, "_vae"):
+            del self._vae
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
     def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
         # 1. Load Model and VAE
