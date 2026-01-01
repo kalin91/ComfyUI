@@ -256,7 +256,7 @@ class JSONManagerApp:
                 logging.exception("Invalid steps value")
                 steps_entry.set(1)
 
-        self.steps_var.trace_add("write", steps_trace_callback)
+        self.steps_var.trace_add("read", steps_trace_callback)
         steps_entry.config(textvariable=self.steps_var)
         self.image_viewer = ImageViewer(viewer_frame)
         self.image_viewer.pack(side="top", fill="both", expand=True)
@@ -670,7 +670,7 @@ class JSONManagerApp:
 
         try:
             required_bytes = int(required_gb * 1024 * 1024 * 1024)
-            free_memory = comfy.model_management.get_free_memory()
+            free_memory = comfy.model_management.get_free_memory() + 1024 * 1024 * 512  # Add 512MB buffer
             return free_memory >= required_bytes
         except Exception as e:
             logging.warning("Failed to check memory: %s", e)

@@ -122,7 +122,12 @@ def _call_wrapper(parent: tk.Widget, fun: Callable, loading_win: tk.Toplevel, wa
         """Cleanup function to close loading and progress windows."""
         if loading_win:
             progress_win = getattr(loading_win, "progress_window", None)
-            loading_win.destroy()
+            try:
+                if loading_win.winfo_exists():
+                    loading_win.destroy()
+            except Exception:
+                pass
+
             if progress_win:
                 _close_progress_dialog(progress_win, wait)
 
@@ -134,9 +139,14 @@ def _call_wrapper(parent: tk.Widget, fun: Callable, loading_win: tk.Toplevel, wa
             logging.debug("Finished loading modal call wrapper for %s on %s", fun.__name__, parent)
         except Exception as e:
             logging.exception("Error in loading modal call wrapper %s on %s", e, parent)
-            messagebox.showerror(f"Execution Error on {parent}", f"An error occurred: {e}")
-            raise e
-        finally:
+            error_val = e
+
+            def show_error() -> None:
+                cleanup()
+                messagebox.showerror(f"Execution Error on {parent}", f"An error occurred: {error_val}")
+
+            parent.after(0, show_error)
+        else:
             parent.after(0, cleanup)
 
     return inner
