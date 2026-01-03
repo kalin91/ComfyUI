@@ -15,9 +15,10 @@ import yaml
 import torch
 import folder_paths
 from json_gui.json_manager.json_tree_editor import JSONTreeEditor
-from json_gui.scroll_utils import bind_frame_scroll_events
+from json_gui.json_manager import loading_modal
+from json_gui.json_manager.scroll_utils import bind_frame_scroll_events
 from json_gui.json_manager.image_viewer import ImageViewer
-from json_gui import loading_modal, utils as gui_utils, p_logger, c_logger
+from json_gui import utils as gui_utils, p_logger, c_logger
 import comfy.model_management
 
 LOG_QUEUE = p_logger.get_log_queue()
