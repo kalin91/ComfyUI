@@ -11,6 +11,7 @@ from segment_anything.build_sam import Sam
 import comfy.model_management
 from comfy_extras.nodes_sd3 import SkipLayerGuidanceSD3
 from comfy_extras.nodes_images import ResizeAndPadImage
+from comfy_extras.nodes_mask import MaskToImage
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
 from comfy.sd import load_checkpoint_guess_config, VAE
 from comfy.model_patcher import ModelPatcher
@@ -19,7 +20,7 @@ from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.open_pose import OpenposeDetector
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.canny import CannyDetector
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
-from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader
+from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader, FaceDetailer
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
 from nodes import ControlNetApplyAdvanced
 import folder_paths
@@ -27,7 +28,98 @@ import node_helpers
 from PIL import Image, ImageOps, ImageSequence
 
 
-class ControlNetImgPreprocessor(ABC):
+class MimicNode(ABC):
+    """A mimic class for various nodes."""
+
+    def feed_function(self, func, /, *args, **kwargs) -> Any:
+        """Calls func with only the keyword arguments that it accepts."""
+        logging.debug("Feeding function %s with args: %s and kwargs: %s", func.__name__, args, list(kwargs.keys()))
+        sig = inspect.signature(func)
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        return func(*args, **filtered_kwargs)
+
+    @property
+    def last_args(self) -> dict[str, Any]:
+        """Returns the last arguments used."""
+        return self._last_args
+
+    @property
+    def last_output(self) -> Optional[Any]:
+        """Returns the last outputs produced."""
+        return self._last_output
+
+    @property
+    def save_tensor(self) -> Optional[Callable[[torch.Tensor], None]]:
+        """Returns a function to save the tensor."""
+        return self._save_tensor
+
+    @save_tensor.setter
+    def save_tensor(self, value: Callable[[torch.Tensor], None]) -> None:
+        """Sets the function to save the tensor."""
+        assert callable(value), "save_tensor must be a callable function."
+        self._save_tensor = value
+
+    def __init__(self):
+        self._save_tensor: Optional[Callable[[torch.Tensor, str], None]] = None
+        self._return_cache = False
+        self._last_args: dict[str, Any] = {}
+        self._last_output: Optional[Any] = None
+
+    def _update(self, *args, **kwargs) -> None:
+        """Updates the node."""
+        try:
+            if not self._return_cache or not self.__use_cache(*args, **kwargs):
+                logging.info("Updating %s", self.__class__.__name__)
+                self._update_impl(*args, **kwargs)
+                self._last_args = {"args": args, "kwargs": kwargs}
+            self._return_cache = True
+        except Exception as e:
+            logging.exception("Error updating %s: %s", self.__class__.__name__, str(e))
+            raise e
+
+    @abstractmethod
+    def _update_impl(self, *args, **kwargs) -> None:
+        """Abstract method to update the node."""
+
+    @abstractmethod
+    def _process_impl(self, *args, **kwargs) -> Any:
+        """Abstract method to process data."""
+
+    def _process(self, *args, **kwargs) -> Any:
+        """Processes data and returns the result, using caching if available."""
+        if self._return_cache and self._last_output is not None:
+            logging.info("Using cached output for %s", self.__class__.__name__)
+            return self._last_output
+        self._return_cache = False
+        res = self.feed_function(self._process_impl, *args, **kwargs)
+        self._last_output = res
+        return res
+
+    def __use_cache(self, *args, **kwargs) -> bool:
+        """Evaluates whether to use cached output based on the provided arguments."""
+        cache_invalid: bool = False
+        if self._last_args and "args" in self._last_args and "kwargs" in self._last_args:
+            cache_args = self._last_args["args"]
+            cache_kwargs = self._last_args["kwargs"]
+            for i, vl_1 in enumerate(args):
+                if len(cache_args) > i:
+                    vl_2 = cache_args[i]
+                    if vl_1 is vl_2 or vl_1 == vl_2:
+                        continue
+                cache_invalid = True
+                break
+            if not cache_invalid:
+                for key, vl_1 in kwargs.items():
+                    if key in cache_kwargs:
+                        vl_2 = cache_kwargs[key]
+                        if vl_1 is vl_2 or vl_1 == vl_2:
+                            continue
+                    cache_invalid = True
+                    break
+        return not cache_invalid
+
+
+class ControlNetImgPreprocessor(MimicNode, ABC):
     """Abstract base class for ControlNet image preprocessors."""
 
     def __new__(cls, image_name: str, skip: bool, **kwargs) -> "ControlNetImgPreprocessor":
@@ -47,18 +139,11 @@ class ControlNetImgPreprocessor(ABC):
         """Returns whether to skip this preprocessor."""
         return self._skip
 
-    @property
-    def save_tensor(self) -> Optional[Callable[[torch.Tensor], None]]:
-        """Returns a function to save the tensor."""
-        return self._save_tensor
-
-    @save_tensor.setter
-    def save_tensor(self, value: Callable[[torch.Tensor], None]) -> None:
-        """Sets the function to save the tensor."""
-        assert callable(value), "save_tensor must be a callable function."
-        self._save_tensor = value
-
     def tensor(self) -> torch.Tensor:
+        """Processes the image and returns a tensor."""
+        return self._process()
+
+    def _process_impl(self, *args, **kwargs) -> Any:
         """Processes the image and returns a tensor."""
         res = self._tensor_impl(self._controlnet_img)
         if self._save_tensor:
@@ -71,10 +156,16 @@ class ControlNetImgPreprocessor(ABC):
 
     def __init__(self, image_name: str, skip: bool) -> None:
         """Initializes the ControlNetImgPreprocessor with the given image name."""
+        super().__init__()
+        if type(self) is ControlNetImgPreprocessor:  # pylint: disable=C0123
+            self._update(image_name=image_name, skip=skip)
 
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, image_name: str, skip: bool) -> None:
+        """Updates the ControlNet image preprocessor."""
         self._skip = skip
         assert image_name, "Image name must be provided for ControlNetImgPreprocessor."
-        self._save_tensor: Optional[Callable[[torch.Tensor], None]] = None
         logging.info("Loading ControlNet Image...")
         input_folder = folder_paths.get_input_directory()
         image_path = os.path.join(input_folder, image_name)
@@ -100,7 +191,7 @@ class ControlNetImgPreprocessor(ABC):
         self._controlnet_img = img_tensor
 
 
-class SimpleKSampler:
+class SimpleKSampler(MimicNode):
     """A simple KSampler class for demonstration purposes."""
 
     @property
@@ -138,6 +229,26 @@ class SimpleKSampler:
         """Returns whether to use tune."""
         return self._use_tune
 
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(
+        self,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        use_tune: bool,
+    ) -> None:
+        self._seed = seed
+        self._steps = steps
+        self._cfg = cfg
+        self._sampler_name = sampler_name
+        self._scheduler = scheduler
+        self._denoise = denoise
+        self._use_tune = use_tune
+
     def __init__(
         self,
         seed: int,
@@ -148,13 +259,17 @@ class SimpleKSampler:
         denoise: float,
         use_tune: bool,
     ):
-        self._seed = seed
-        self._steps = steps
-        self._cfg = cfg
-        self._sampler_name = sampler_name
-        self._scheduler = scheduler
-        self._denoise = denoise
-        self._use_tune = use_tune
+        super().__init__()
+        if type(self) is SimpleKSampler:  # pylint: disable=C0123
+            self._update(
+                seed=seed,
+                steps=steps,
+                cfg=cfg,
+                sampler_name=sampler_name,
+                scheduler=scheduler,
+                denoise=denoise,
+                use_tune=use_tune,
+            )
 
     def _to_dict(self) -> dict:
         """Converts the SimpleKSampler instance to a dictionary."""
@@ -177,6 +292,13 @@ class SimpleKSampler:
         }
 
     def process(
+        self, latent_image: torch.Tensor, model: ModelPatcher, cond_pos_cnet: Any, cond_neg_cnet: Any
+    ) -> torch.Tensor:
+        """Processes the latent image using the sampler."""
+        return self._process(latent_image, model, cond_pos_cnet, cond_neg_cnet)
+
+    # pylint: disable=W0221
+    def _process_impl(
         self, latent_image: torch.Tensor, model: ModelPatcher, cond_pos_cnet: Any, cond_neg_cnet: Any
     ) -> torch.Tensor:
         """A placeholder method to simulate processing."""
@@ -213,7 +335,7 @@ class SimpleKSampler:
         return comfy.sample.sample(**sampler_arguments)
 
 
-class EmptyLatent:
+class EmptyLatent(MimicNode):
     """An empty latent class for placeholder purposes."""
 
     @property
@@ -234,6 +356,11 @@ class EmptyLatent:
     @property
     def latent(self) -> torch.Tensor:
         """Generates and returns an empty latent tensor."""
+        return self._process()
+
+    # pylint: disable=W0221
+    def _process_impl(self) -> torch.Tensor:
+        """Generates and returns an empty latent tensor."""
         logging.info("Creating empty latent %sx%s...", self._width, self._height)
 
         return torch.zeros(
@@ -241,13 +368,19 @@ class EmptyLatent:
             device=comfy.model_management.intermediate_device(),
         )
 
-    def __init__(self, width: int, height: int, batch_size: int):
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, width: int, height: int, batch_size: int) -> None:
         self._width = width
         self._height = height
         self._batch_size = batch_size
 
+    def __init__(self, width: int, height: int, batch_size: int):
+        super().__init__()
+        self._update(width=width, height=height, batch_size=batch_size)
 
-class ApplyControlNet:
+
+class ApplyControlNet(MimicNode):
     """Returns the ControlNet application parameters."""
 
     @property
@@ -271,6 +404,11 @@ class ApplyControlNet:
         return self._target
 
     def conditionals(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
+        """Generates conditionals using the ControlNet preprocessor."""
+        return self._process(cond_pos, cond_neg, vae)
+
+    # pylint: disable=W0221
+    def _process_impl(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
         """Returns placeholder conditionals."""
 
         image_tensor: torch.Tensor = self._target.tensor()
@@ -297,13 +435,26 @@ class ApplyControlNet:
 
         return res
 
-    def __init__(
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(
         self, strength: float, start_percentage: float, end_percentage: float, target: ControlNetImgPreprocessor
-    ):
+    ) -> None:
         self._strength = strength
         self._start_percentage = start_percentage
         self._end_percentage = end_percentage
         self._target = target
+
+    def __init__(
+        self, strength: float, start_percentage: float, end_percentage: float, target: ControlNetImgPreprocessor
+    ):
+        super().__init__()
+        self._update(
+            strength=strength,
+            start_percentage=start_percentage,
+            end_percentage=end_percentage,
+            target=target,
+        )
 
 
 class OpenPosePose(ControlNetImgPreprocessor):
@@ -313,31 +464,6 @@ class OpenPosePose(ControlNetImgPreprocessor):
     def controlnet_path(self) -> str:
         """Returns the ControlNet path."""
         return self._controlnet_path
-
-    @property
-    def detect_body(self) -> bool:
-        """Returns whether body detection is enabled."""
-        return self._detect_body
-
-    @property
-    def detect_hands(self) -> bool:
-        """Returns whether hand detection is enabled."""
-        return self._detect_hands
-
-    @property
-    def detect_face(self) -> bool:
-        """Returns whether face detection is enabled."""
-        return self._detect_face
-
-    @property
-    def scale_stick_for_xinsr_cn(self) -> bool:
-        """Returns whether OpenPose scale stick for xinsr_cn is enabled."""
-        return self._scale_stick_for_xinsr_cn
-
-    @property
-    def resolution(self) -> int:
-        """Returns the OpenPose resolution."""
-        return self._resolution
 
     def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
         """Processes the image tensor using OpenPose preprocessor."""
@@ -353,12 +479,12 @@ class OpenPosePose(ControlNetImgPreprocessor):
         result = aux_utils.common_annotator_call(
             lambda image, **kwargs: openpose_model(image, **kwargs)[0],  # noqa: F821
             cnet_img,
-            include_hand=self.detect_hands,
-            include_face=self.detect_face,
-            include_body=self.detect_body,
+            include_hand=self._detect_hands,
+            include_face=self._detect_face,
+            include_body=self._detect_body,
             image_and_json=True,
-            xinsr_stick_scaling=self.scale_stick_for_xinsr_cn,
-            resolution=self.resolution,
+            xinsr_stick_scaling=self._scale_stick_for_xinsr_cn,
+            resolution=self._resolution,
         )
 
         # Clean up OpenPose model after use
@@ -366,6 +492,27 @@ class OpenPosePose(ControlNetImgPreprocessor):
         comfy.model_management.soft_empty_cache()
 
         return result
+
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(
+        self,
+        image_name: str,
+        detect_body: bool,
+        detect_hands: bool,
+        detect_face: bool,
+        scale_stick_for_xinsr_cn: bool,
+        resolution: int,
+        controlnet_path: str,
+        skip: bool,
+    ) -> None:
+        super()._update_impl(image_name, skip)
+        self._detect_body = detect_body
+        self._detect_hands = detect_hands
+        self._detect_face = detect_face
+        self._scale_stick_for_xinsr_cn = scale_stick_for_xinsr_cn
+        self._resolution = resolution
+        self._controlnet_path = controlnet_path
 
     def __init__(
         self,
@@ -379,12 +526,16 @@ class OpenPosePose(ControlNetImgPreprocessor):
         skip: bool,
     ):
         super().__init__(image_name, skip)
-        self._detect_body = detect_body
-        self._detect_hands = detect_hands
-        self._detect_face = detect_face
-        self._scale_stick_for_xinsr_cn = scale_stick_for_xinsr_cn
-        self._resolution = resolution
-        self._controlnet_path = controlnet_path
+        self._update(
+            image_name=image_name,
+            detect_body=detect_body,
+            detect_hands=detect_hands,
+            detect_face=detect_face,
+            scale_stick_for_xinsr_cn=scale_stick_for_xinsr_cn,
+            resolution=resolution,
+            controlnet_path=controlnet_path,
+            skip=skip,
+        )
 
 
 class CannyEdge(ControlNetImgPreprocessor):
@@ -395,21 +546,6 @@ class CannyEdge(ControlNetImgPreprocessor):
         """Returns the ControlNet path."""
         return self._controlnet_path
 
-    @property
-    def low_threshold(self) -> int:
-        """Returns the low threshold value."""
-        return self._low_threshold
-
-    @property
-    def high_threshold(self) -> int:
-        """Returns the high threshold value."""
-        return self._high_threshold
-
-    @property
-    def resolution(self) -> int:
-        """Returns the detection resolution."""
-        return self._resolution
-
     def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
         """Processes the image tensor using Canny edge detector."""
         cnet_height, cnet_width = cnet_img.shape[1], cnet_img.shape[2]
@@ -417,9 +553,9 @@ class CannyEdge(ControlNetImgPreprocessor):
         res = aux_utils.common_annotator_call(
             CannyDetector(),
             cnet_img,
-            low_threshold=self.low_threshold,
-            high_threshold=self.high_threshold,
-            resolution=self.resolution,
+            low_threshold=self._low_threshold,
+            high_threshold=self._high_threshold,
+            resolution=self._resolution,
         )
         # Resize to match ControlNet input size if needed
         if (res.shape[2], res.shape[3]) != (cnet_height, cnet_width):
@@ -432,6 +568,23 @@ class CannyEdge(ControlNetImgPreprocessor):
             )[0]
         return res
 
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(
+        self,
+        image_name: str,
+        low_threshold: int,
+        high_threshold: int,
+        resolution: int,
+        controlnet_path: str,
+        skip: bool,
+    ) -> None:
+        super()._update_impl(image_name, skip)
+        self._low_threshold = low_threshold
+        self._high_threshold = high_threshold
+        self._resolution = resolution
+        self._controlnet_path = controlnet_path
+
     def __init__(
         self,
         image_name: str,
@@ -442,13 +595,17 @@ class CannyEdge(ControlNetImgPreprocessor):
         skip: bool,
     ) -> None:
         super().__init__(image_name, skip)
-        self._low_threshold = low_threshold
-        self._high_threshold = high_threshold
-        self._resolution = resolution
-        self._controlnet_path = controlnet_path
+        self._update(
+            image_name=image_name,
+            low_threshold=low_threshold,
+            high_threshold=high_threshold,
+            resolution=resolution,
+            controlnet_path=controlnet_path,
+            skip=skip,
+        )
 
 
-class FaceDetailer(SimpleKSampler):
+class FaceDetailerNode(SimpleKSampler):
     """A class representing face detailer settings."""
 
     @property
@@ -460,101 +617,6 @@ class FaceDetailer(SimpleKSampler):
     def bbox_detector(self) -> subcore.UltraBBoxDetector:
         """Returns the batch size."""
         return self._bbox_detector
-
-    @property
-    def guide_size(self) -> int:
-        """Returns the guide size."""
-        return self._guide_size
-
-    @property
-    def guide_size_for(self) -> bool:
-        """Returns whether to use guide size for."""
-        return self._guide_size_for
-
-    @property
-    def max_size(self) -> int:
-        """Returns the maximum size."""
-        return self._max_size
-
-    @property
-    def feather(self) -> int:
-        """Returns the feather value."""
-        return self._feather
-
-    @property
-    def noise_mask(self) -> bool:
-        """Returns whether noise mask is enabled."""
-        return self._noise_mask
-
-    @property
-    def force_inpaint(self) -> bool:
-        """Returns whether force inpaint is enabled."""
-        return self._force_inpaint
-
-    @property
-    def drop_size(self) -> int:
-        """Returns the drop size."""
-        return self._drop_size
-
-    @property
-    def cycle(self) -> int:
-        """Returns the cycle count."""
-        return self._cycle
-
-    @property
-    def bbox_threshold(self) -> float:
-        """Returns the bounding box threshold."""
-        return self._bbox_threshold
-
-    @property
-    def bbox_dilation(self) -> int:
-        """Returns the bounding box dilation."""
-        return self._bbox_dilation
-
-    @property
-    def bbox_crop_factor(self) -> float:
-        """Returns the bounding box crop factor."""
-        return self._bbox_crop_factor
-
-    @property
-    def sam_detection_hint(self) -> str:
-        """Returns the SAM detection hint."""
-        return self._sam_detection_hint
-
-    @property
-    def sam_dilation(self) -> int:
-        """Returns the SAM dilation."""
-        return self._sam_dilation
-
-    @property
-    def sam_threshold(self) -> float:
-        """Returns the SAM threshold."""
-        return self._sam_threshold
-
-    @property
-    def sam_bbox_expansion(self) -> int:
-        """Returns the SAM bounding box expansion."""
-        return self._sam_bbox_expansion
-
-    @property
-    def sam_mask_hint_threshold(self) -> float:
-        """Returns the SAM mask hint threshold."""
-        return self._sam_mask_hint_threshold
-
-    @property
-    def sam_mask_hint_use_negative(self) -> str:
-        """Returns whether to use negative SAM mask hint."""
-        return self._sam_mask_hint_use_negative
-
-    @property
-    def wildcard(self) -> str:
-        """Returns the wildcard."""
-        return self._wildcard
-
-    @property
-    def use_tune(self) -> bool:
-        """Returns whether to use tune."""
-        return self._use_tune
 
     def to_dict(self) -> dict:
         """Converts the FaceDetailer instance to a dictionary."""
@@ -584,6 +646,114 @@ class FaceDetailer(SimpleKSampler):
             }
         )
         return base_dict
+
+    def detailer_func(self, input_image: torch.Tensor, input_dict: dict) -> torch.Tensor:
+        """Function to process image once rotated."""
+
+        # 10.5 FaceDetailer
+        logging.info("Running FaceDetailer...")
+
+        face_detailer = FaceDetailer()
+
+        # FaceDetailer.doit(image, model, clip, vae, guide_size, guide_size_for, max_size,
+        # seed, steps, cfg, sampler_name, scheduler, denoise, feather, noise_mask, force_inpaint,
+        # bbox_threshold, bbox_dilation, bbox_crop_factor, sam_detection_hint, sam_dilation, sam_threshold,
+        # sam_bbox_expansion, sam_mask_hint_threshold, sam_mask_hint_use_negative, drop_size, bbox_detector,
+        # sam_model_opt, segm_detector_opt, detailer_hook)
+
+        # Note: Arguments might vary slightly depending on version, checking signature would be good.
+        # Assuming standard arguments based on common usage.
+
+        face_arguments = self.to_dict()
+
+        face_arguments.update(input_dict)
+
+        face_arguments.update(
+            {
+                "image": input_image,
+                "segm_detector_opt": None,  # Not using segm detector here
+                "detailer_hook": None,
+            }
+        )
+
+        # validate face_arguments keys against FaceDetailer.doit signature would be ideal
+        face_signature = inspect.signature(face_detailer.doit)
+        for key in face_arguments:
+            if key not in face_signature.parameters:
+                raise ValueError(f"Unexpected argument '{key}' for FaceDetailer.doit")
+
+        result_images, cropped_images, cropped_alpha, mask = face_detailer.doit(**face_arguments)[:4]
+        if self._save_tensor:
+            for idx, cropped in enumerate(cropped_images):
+                self._save_tensor(cropped, f"face-cropped-{idx}")
+            for idx, alpha in enumerate(cropped_alpha):
+                self._save_tensor(alpha, f"face-alpha-{idx}")
+            mask_img_tensor: tuple = MaskToImage().execute(mask).result[0]  # pylint: disable=E1136
+            self._save_tensor(mask_img_tensor, "face-mask")
+        return result_images
+
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(
+        self,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        guide_size: int,
+        guide_size_for: bool,
+        max_size: int,
+        feather: int,
+        noise_mask: bool,
+        force_inpaint: bool,
+        drop_size: int,
+        cycle: int,
+        bbox_threshold: float,
+        bbox_dilation: int,
+        bbox_crop_factor: float,
+        sam_detection_hint: str,
+        sam_dilation: int,
+        sam_threshold: float,
+        sam_bbox_expansion: int,
+        sam_mask_hint_threshold: float,
+        sam_mask_hint_use_negative: str,
+        bbox_detector: str,
+        sam_model_opt: str,
+        wildcard: str,
+        use_tune: bool,
+    ) -> None:
+        super()._update_impl(seed, steps, cfg, sampler_name, scheduler, denoise, use_tune)
+        self._guide_size = guide_size
+        self._guide_size_for = guide_size_for
+        self._max_size = max_size
+        self._feather = feather
+        self._noise_mask = noise_mask
+        self._force_inpaint = force_inpaint
+        self._drop_size = drop_size
+        self._cycle = cycle
+        self._bbox_threshold = bbox_threshold
+        self._bbox_dilation = bbox_dilation
+        self._bbox_crop_factor = bbox_crop_factor
+        self._sam_detection_hint = sam_detection_hint
+        self._sam_dilation = sam_dilation
+        self._sam_threshold = sam_threshold
+        self._sam_bbox_expansion = sam_bbox_expansion
+        self._sam_mask_hint_threshold = sam_mask_hint_threshold
+        self._sam_mask_hint_use_negative = sam_mask_hint_use_negative
+        self._wildcard = wildcard
+
+        # Free memory before loading detection models
+        comfy.model_management.soft_empty_cache()
+
+        bbox_provider = UltralyticsDetectorProvider()
+        # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
+        self._bbox_detector, _c = bbox_provider.doit(bbox_detector)
+
+        sam_loader = SAMLoader()
+        # SAMLoader.load_model returns (SAM_MODEL,)
+        self._sam_model_opt = sam_loader.load_model(sam_model_opt)[0]
 
     def __init__(
         self,
@@ -616,38 +786,38 @@ class FaceDetailer(SimpleKSampler):
         use_tune: bool,
     ):
         super().__init__(seed, steps, cfg, sampler_name, scheduler, denoise, use_tune)
-        self._guide_size = guide_size
-        self._guide_size_for = guide_size_for
-        self._max_size = max_size
-        self._feather = feather
-        self._noise_mask = noise_mask
-        self._force_inpaint = force_inpaint
-        self._drop_size = drop_size
-        self._cycle = cycle
-        self._bbox_threshold = bbox_threshold
-        self._bbox_dilation = bbox_dilation
-        self._bbox_crop_factor = bbox_crop_factor
-        self._sam_detection_hint = sam_detection_hint
-        self._sam_dilation = sam_dilation
-        self._sam_threshold = sam_threshold
-        self._sam_bbox_expansion = sam_bbox_expansion
-        self._sam_mask_hint_threshold = sam_mask_hint_threshold
-        self._sam_mask_hint_use_negative = sam_mask_hint_use_negative
-        self._wildcard = wildcard
+        self._update(
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            denoise=denoise,
+            use_tune=use_tune,
+            guide_size=guide_size,
+            guide_size_for=guide_size_for,
+            max_size=max_size,
+            feather=feather,
+            noise_mask=noise_mask,
+            force_inpaint=force_inpaint,
+            drop_size=drop_size,
+            cycle=cycle,
+            bbox_threshold=bbox_threshold,
+            bbox_dilation=bbox_dilation,
+            bbox_crop_factor=bbox_crop_factor,
+            sam_detection_hint=sam_detection_hint,
+            sam_dilation=sam_dilation,
+            sam_threshold=sam_threshold,
+            sam_bbox_expansion=sam_bbox_expansion,
+            sam_mask_hint_threshold=sam_mask_hint_threshold,
+            sam_mask_hint_use_negative=sam_mask_hint_use_negative,
+            bbox_detector=bbox_detector,
+            sam_model_opt=sam_model_opt,
+            wildcard=wildcard,
+        )
 
-        # Free memory before loading detection models
-        comfy.model_management.soft_empty_cache()
 
-        bbox_provider = UltralyticsDetectorProvider()
-        # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
-        self._bbox_detector, _c = bbox_provider.doit(bbox_detector)
-
-        sam_loader = SAMLoader()
-        # SAMLoader.load_model returns (SAM_MODEL,)
-        self._sam_model_opt = sam_loader.load_model(sam_model_opt)[0]
-
-
-class Rotator:
+class Rotator(MimicNode):
     """A class representing image rotation settings."""
 
     @property
@@ -655,10 +825,21 @@ class Rotator:
         """Returns the rotation angle."""
         return self._angle
 
-    def __init__(self, angle: float):
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, angle: float) -> None:
         self._angle = angle
 
+    def __init__(self, angle: float):
+        super().__init__()
+        self._update(angle=angle)
+
     def rotate_image(self, image: torch.Tensor, func: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
+        """Rotates the image by the specified angle, processes it, and rotates it back."""
+        return self._process(image, func)
+
+    # pylint: disable=W0221
+    def _process_impl(self, image: torch.Tensor, func: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
         """Rotates the given image tensor by the specified angle.
 
         Uses PIL with BICUBIC interpolation to minimize quality loss during rotation.
@@ -729,12 +910,17 @@ class Rotator:
         return rotated_image
 
 
-class SkipLayers:
+class SkipLayers(MimicNode):
     """A class representing skip layer guidance settings."""
 
     CHECKPOINT_PATH = "sd3.5_medium.safetensors"
 
     def get_model(self, use_tuned: bool) -> ModelPatcher:
+        """Returns the model based on whether to use the tuned version."""
+        return self._process_impl(use_tuned)
+
+    # pylint: disable=W0221
+    def _process_impl(self, use_tuned: bool) -> ModelPatcher:
         """Returns the tuned model."""
         return self._tunned_model if use_tuned else self._base_model
 
@@ -743,7 +929,9 @@ class SkipLayers:
         """Returns the VAE."""
         return self._vae
 
-    def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, layers: list[int], scale: float, start_percent: float, end_percent: float) -> None:
         # 1. Load Model and VAE
         logging.info("Loading Checkpoint...")
 
@@ -774,3 +962,7 @@ class SkipLayers:
             self._tunned_model = result[0]
         else:
             self._tunned_model = self._base_model
+
+    def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
+        super().__init__()
+        self._update(layers=layers, scale=scale, start_percent=start_percent, end_percent=end_percent)

@@ -12,7 +12,7 @@ from json_gui.mimic_classes import (
     ApplyControlNet,
     EmptyLatent,
     SimpleKSampler,
-    FaceDetailer,
+    FaceDetailerNode,
     Rotator,
     SkipLayers,
 )
@@ -50,7 +50,7 @@ class Model:
         return self._simple_k_sampler
 
     @property
-    def face_detailer(self) -> FaceDetailer:
+    def face_detailer(self) -> FaceDetailerNode:
         """Returns the FaceDetailer instance."""
         return self._face_detailer
 
@@ -112,6 +112,7 @@ class Model:
         self._negative = json_props["negative"]
         self._empty_latent = EmptyLatent(**json_props["empty_latent"])
         self._simple_k_sampler = [SimpleKSampler(**s) for s in json_props["simple_k_sampler"]]
-        self._face_detailer = FaceDetailer(**json_props["face_detailer"])
+        self._face_detailer = FaceDetailerNode(**json_props["face_detailer"])
+        self._face_detailer.save_tensor = self._save_call
         self._rotator = Rotator(**json_props["rotator"])
         self._skip_layers_model = SkipLayers(**json_props["skip_layers_model"])

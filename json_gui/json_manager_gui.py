@@ -5,7 +5,6 @@ from importlib.util import spec_from_file_location, module_from_spec
 import json
 import os
 import logging
-from functools import partial
 from pathlib import Path
 from typing import Any, Optional, Type
 import uuid
@@ -14,39 +13,20 @@ from tkinter import ttk, messagebox, simpledialog
 import yaml
 import torch
 import folder_paths
-from json_gui.json_manager.json_tree_editor import JSONTreeEditor
-from json_gui.json_manager import loading_modal
-from json_gui.json_manager.scroll_utils import bind_frame_scroll_events
-from json_gui.json_manager.image_viewer import ImageViewer
-from json_gui import utils as gui_utils, p_logger, c_logger
+from app.logger import setup_logger
+from json_gui.json_tree_editor import JSONTreeEditor
+from json_gui.scroll_utils import bind_frame_scroll_events
+from json_gui.image_viewer import ImageViewer
+from json_gui import loading_modal, utils as gui_utils
 import comfy.model_management
+from comfy.cli_args import args
 
-LOG_QUEUE = p_logger.get_log_queue()
 
+logger = logging.getLogger()
+if logger.hasHandlers():
+    logger.handlers.clear()
 
-def execute_flow(
-    q: torch.multiprocessing.Queue,
-    flow_class: type[gui_utils.AbsFlow],
-    foldername: str,
-    filename_without_ext: str,
-    steps: int,
-) -> list[str]:
-    """Execute the flow and return generated image paths."""
-
-    # Execute the flow
-    assert flow_class is not None, "Flow class is not set"
-
-    logging.info(
-        "Executing flow: script=%s, folder=%s, file=%s, steps=%s",
-        foldername,
-        foldername,
-        filename_without_ext,
-        steps,
-    )
-
-    flow_inst = flow_class(foldername, filename_without_ext)
-    image_paths = flow_inst.run(steps)
-    q.put(image_paths)
+setup_logger(log_level=args.verbose, use_stdout=args.log_stdout)
 
 
 class JSONManagerApp:
@@ -616,25 +596,20 @@ class JSONManagerApp:
                 if not self._check_memory_available():
                     raise MemoryError("GPU memory is too fragmented. Please restart the application.")
 
-                exec_flow_ctx = partial(
-                    execute_flow,
-                    flow_class=self.flow,
-                    foldername=foldername,
-                    filename_without_ext=filename_without_ext,
-                    steps=steps,
+                # Execute the flow
+                flow_class = self.flow
+                assert flow_class is not None, "Flow class is not set"
+
+                logging.info(
+                    "Executing flow: script=%s, folder=%s, file=%s, steps=%s",
+                    foldername,
+                    foldername,
+                    filename_without_ext,
+                    steps,
                 )
-                q = p_logger.get_mp_context().Queue()
-                p = p_logger.get_mp_context().Process(
-                    target=c_logger.worker_wrapper,
-                    args=(
-                        exec_flow_ctx,
-                        LOG_QUEUE,
-                        q,
-                    ),
-                )
-                p.start()
-                p.join()
-                image_paths = q.get()
+
+                flow_inst = flow_class(foldername, filename_without_ext)
+                image_paths = flow_inst.run(steps)
 
                 # Clean up after execution
                 self._cleanup_vram()
@@ -660,9 +635,6 @@ class JSONManagerApp:
                     ),
                 )
                 raise
-            except Exception as e:
-                logging.exception("Execution failed on flow")
-                raise e
 
         loading_modal.show_loading_modal(
             self.root,
@@ -670,7 +642,6 @@ class JSONManagerApp:
             (),
             f"Executing Flow {foldername}: {filename_without_ext}...",
             True,
-            log_queue_poll=p_logger.poll_log_queue,
         )
 
     def _cleanup_vram(self) -> None:
