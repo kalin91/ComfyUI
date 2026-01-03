@@ -253,13 +253,29 @@ def show_loading_modal(
     args: tuple,
     message: str = "Loading...",
     keep_open: bool = False,
+    log_queue_poll: Callable[[], int] | None = None,
 ) -> None:
-    """Show a modal loading window with logging output redirected to it."""
+    """Show a modal loading window with logging output redirected to it.
+    
+    Args:
+        parent: Parent widget
+        on_call: Function to call
+        args: Arguments to pass to on_call
+        message: Loading message to display
+        keep_open: Whether to keep the progress window open after completion
+        log_queue_poll: Optional function to poll child process log queue
+    """
     loading_win = _create_loading_modal(parent, message)
     on_call_wrapped = _call_wrapper(parent, on_call, loading_win, keep_open)
     t = threading.Thread(target=on_call_wrapped, args=args)
     t.start()
     while t.is_alive():
+        # Poll log queue from child processes if provided
+        if log_queue_poll is not None:
+            try:
+                log_queue_poll()
+            except Exception:
+                pass
         parent.after(100, parent.update())
 
 
