@@ -12,7 +12,7 @@ from tkinter import ttk, messagebox
 from typing import Any, Callable
 from PIL import Image, ImageTk
 import json_gui.utils as gui_utils
-from json_gui.scroll_utils import bind_frame_scroll_events, bind_scroll_events
+from json_gui.json_manager.scroll_utils import bind_frame_scroll_events, bind_scroll_events
 from json_gui.constants import COMBO_CONSTANTS, JSON_CANVAS_NAME, JSON_SCROLL_FRAME_NAME
 
 
