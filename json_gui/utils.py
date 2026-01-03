@@ -1,11 +1,11 @@
 """Utility functions for JSON GUI management."""
-
 import os
 import re
 import logging
 import shutil
 from abc import ABC, abstractmethod
 from typing import Optional
+import json_gui.server as __  # noqa: F401, E402 pylint: disable=C0413
 import folder_paths
 import torch
 from PIL import Image

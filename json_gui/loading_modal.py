@@ -256,7 +256,7 @@ def show_loading_modal(
     log_queue_poll: Callable[[], int] | None = None,
 ) -> None:
     """Show a modal loading window with logging output redirected to it.
-    
+
     Args:
         parent: Parent widget
         on_call: Function to call

@@ -22,7 +22,7 @@ LOG_QUEUE: mlp.Queue = MP_CONTEXT.Queue()
 
 def poll_log_queue() -> int:
     """Poll the log queue and process any pending records.
-    
+
     Returns:
         Number of records processed.
     """
@@ -44,6 +44,6 @@ def get_log_queue() -> mlp.Queue:
     return LOG_QUEUE
 
 
-def get_mp_context():
+def get_mp_context() -> mlp.SpawnContext:
     """Get the spawn multiprocessing context."""
     return MP_CONTEXT
