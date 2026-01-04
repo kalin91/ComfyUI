@@ -28,10 +28,33 @@ import node_helpers
 from PIL import Image, ImageOps, ImageSequence
 
 
+def safe_reference_compare(var1, var2) -> bool:
+    """
+    if var1 and var2 are of basic types (int, float, str, bool, tuple, bytes, NoneType),
+    compare by value (==); else compare by identity (is).
+    """
+
+    optimizable_types = (int, str, float, bool, tuple, bytes, type(None))
+
+    if isinstance(var1, optimizable_types):
+        # For basic types, we can safely compare by value
+        # assuming their __eq__ methods are standard and safe.
+        return var1 == var2
+
+    # 2. For EVERYTHING else (lists, dicts, your own classes, etc.)
+    # we use 'is' to avoid triggering custom or slow __eq__ methods.
+    return var1 is var2
+
+
 class MimicNode(ABC):
     """A mimic class for various nodes."""
 
-    def feed_function(self, func, /, *args, **kwargs) -> Any:
+    @classmethod
+    @abstractmethod
+    def key(cls) -> str:
+        """Returns the key for the mimic node."""
+
+    def _feed_function(self, func, /, *args, **kwargs) -> Any:
         """Calls func with only the keyword arguments that it accepts."""
         logging.debug("Feeding function %s with args: %s and kwargs: %s", func.__name__, args, list(kwargs.keys()))
         sig = inspect.signature(func)
@@ -39,9 +62,14 @@ class MimicNode(ABC):
         return func(*args, **filtered_kwargs)
 
     @property
-    def last_args(self) -> dict[str, Any]:
+    def init_args(self) -> dict[str, Any]:
         """Returns the last arguments used."""
-        return self._last_args
+        return self._init_args
+
+    @property
+    def exec_args(self) -> dict[str, Any]:
+        """Returns the last execution arguments used."""
+        return self._exec_args
 
     @property
     def last_output(self) -> Optional[Any]:
@@ -62,17 +90,18 @@ class MimicNode(ABC):
     def __init__(self):
         self._save_tensor: Optional[Callable[[torch.Tensor, str], None]] = None
         self._return_cache = False
-        self._last_args: dict[str, Any] = {}
+        self._init_args: dict[str, Any] = {}
+        self._exec_args: dict[str, Any] = {}
         self._last_output: Optional[Any] = None
 
-    def _update(self, *args, **kwargs) -> None:
+    def update(self, *args, **kwargs) -> None:
         """Updates the node."""
         try:
-            if not self._return_cache or not self.__use_cache(*args, **kwargs):
+            if not self._return_cache or not self.__use_cache(self._init_args, *args, **kwargs):
                 logging.info("Updating %s", self.__class__.__name__)
                 self._update_impl(*args, **kwargs)
-                self._last_args = {"args": args, "kwargs": kwargs}
-            self._return_cache = True
+                self._init_args = {"args": args, "kwargs": kwargs}
+                self._last_output = None
         except Exception as e:
             logging.exception("Error updating %s: %s", self.__class__.__name__, str(e))
             raise e
@@ -87,24 +116,27 @@ class MimicNode(ABC):
 
     def _process(self, *args, **kwargs) -> Any:
         """Processes data and returns the result, using caching if available."""
-        if self._return_cache and self._last_output is not None:
+        if self._return_cache and self._last_output is not None and self.__use_cache(self._exec_args, *args, **kwargs):
             logging.info("Using cached output for %s", self.__class__.__name__)
             return self._last_output
         self._return_cache = False
-        res = self.feed_function(self._process_impl, *args, **kwargs)
+        logging.info("Processing %s", self.__class__.key())
+        res = self._feed_function(self._process_impl, *args, **kwargs)
+        self._exec_args = {"args": args, "kwargs": kwargs}
         self._last_output = res
+        self._return_cache = True
         return res
 
-    def __use_cache(self, *args, **kwargs) -> bool:
+    def __use_cache(self, cached_args: dict, *args, **kwargs) -> bool:
         """Evaluates whether to use cached output based on the provided arguments."""
         cache_invalid: bool = False
-        if self._last_args and "args" in self._last_args and "kwargs" in self._last_args:
-            cache_args = self._last_args["args"]
-            cache_kwargs = self._last_args["kwargs"]
+        if cached_args and "args" in cached_args and "kwargs" in cached_args:
+            cache_args = cached_args["args"]
+            cache_kwargs = cached_args["kwargs"]
             for i, vl_1 in enumerate(args):
                 if len(cache_args) > i:
                     vl_2 = cache_args[i]
-                    if vl_1 is vl_2 or vl_1 == vl_2:
+                    if safe_reference_compare(vl_1, vl_2):
                         continue
                 cache_invalid = True
                 break
@@ -112,7 +144,7 @@ class MimicNode(ABC):
                 for key, vl_1 in kwargs.items():
                     if key in cache_kwargs:
                         vl_2 = cache_kwargs[key]
-                        if vl_1 is vl_2 or vl_1 == vl_2:
+                        if safe_reference_compare(vl_1, vl_2):
                             continue
                     cache_invalid = True
                     break
@@ -158,7 +190,7 @@ class ControlNetImgPreprocessor(MimicNode, ABC):
         """Initializes the ControlNetImgPreprocessor with the given image name."""
         super().__init__()
         if type(self) is ControlNetImgPreprocessor:  # pylint: disable=C0123
-            self._update(image_name=image_name, skip=skip)
+            self.update(image_name=image_name, skip=skip)
 
     # pylint: disable=W0221
     # pylint: disable=W0201
@@ -194,35 +226,9 @@ class ControlNetImgPreprocessor(MimicNode, ABC):
 class SimpleKSampler(MimicNode):
     """A simple KSampler class for demonstration purposes."""
 
-    @property
-    def seed(self) -> int:
-        """Returns the seed value."""
-        return self._seed
-
-    @property
-    def steps(self) -> int:
-        """Returns the number of steps."""
-        return self._steps
-
-    @property
-    def cfg(self) -> float:
-        """Returns the CFG scale."""
-        return self._cfg
-
-    @property
-    def sampler_name(self) -> str:
-        """Returns the name of the sampler."""
-        return self._sampler_name
-
-    @property
-    def scheduler(self) -> str:
-        """Returns the name of the scheduler."""
-        return self._scheduler
-
-    @property
-    def denoise(self) -> float:
-        """Returns the denoise value."""
-        return self._denoise
+    @classmethod
+    def key(cls) -> str:
+        return "simple_k_sampler"
 
     @property
     def use_tune(self) -> bool:
@@ -261,7 +267,7 @@ class SimpleKSampler(MimicNode):
     ):
         super().__init__()
         if type(self) is SimpleKSampler:  # pylint: disable=C0123
-            self._update(
+            self.update(
                 seed=seed,
                 steps=steps,
                 cfg=cfg,
@@ -338,20 +344,9 @@ class SimpleKSampler(MimicNode):
 class EmptyLatent(MimicNode):
     """An empty latent class for placeholder purposes."""
 
-    @property
-    def width(self) -> int:
-        """Returns the width of the latent."""
-        return self._width
-
-    @property
-    def height(self) -> int:
-        """Returns the height of the latent."""
-        return self._height
-
-    @property
-    def batch_size(self) -> int:
-        """Returns the batch size of the latent."""
-        return self._batch_size
+    @classmethod
+    def key(cls) -> str:
+        return "empty_latent"
 
     @property
     def latent(self) -> torch.Tensor:
@@ -377,26 +372,15 @@ class EmptyLatent(MimicNode):
 
     def __init__(self, width: int, height: int, batch_size: int):
         super().__init__()
-        self._update(width=width, height=height, batch_size=batch_size)
+        self.update(width=width, height=height, batch_size=batch_size)
 
 
 class ApplyControlNet(MimicNode):
     """Returns the ControlNet application parameters."""
 
-    @property
-    def strength(self) -> float:
-        """Returns the strength value."""
-        return self._strength
-
-    @property
-    def start_percentage(self) -> float:
-        """Returns the start percentage value."""
-        return self._start_percentage
-
-    @property
-    def end_percentage(self) -> float:
-        """Returns the end percentage value."""
-        return self._end_percentage
+    @classmethod
+    def key(cls) -> str:
+        return "apply_control_net"
 
     @property
     def target(self) -> ControlNetImgPreprocessor:
@@ -449,7 +433,7 @@ class ApplyControlNet(MimicNode):
         self, strength: float, start_percentage: float, end_percentage: float, target: ControlNetImgPreprocessor
     ):
         super().__init__()
-        self._update(
+        self.update(
             strength=strength,
             start_percentage=start_percentage,
             end_percentage=end_percentage,
@@ -459,6 +443,10 @@ class ApplyControlNet(MimicNode):
 
 class OpenPosePose(ControlNetImgPreprocessor):
     """A class representing OpenPose pose settings."""
+
+    @classmethod
+    def key(cls) -> str:
+        return "openpose_pose"
 
     @property
     def controlnet_path(self) -> str:
@@ -526,7 +514,7 @@ class OpenPosePose(ControlNetImgPreprocessor):
         skip: bool,
     ):
         super().__init__(image_name, skip)
-        self._update(
+        self.update(
             image_name=image_name,
             detect_body=detect_body,
             detect_hands=detect_hands,
@@ -540,6 +528,10 @@ class OpenPosePose(ControlNetImgPreprocessor):
 
 class CannyEdge(ControlNetImgPreprocessor):
     """A class representing Canny edge detector settings."""
+
+    @classmethod
+    def key(cls) -> str:
+        return "canny_edge"
 
     @property
     def controlnet_path(self) -> str:
@@ -595,7 +587,7 @@ class CannyEdge(ControlNetImgPreprocessor):
         skip: bool,
     ) -> None:
         super().__init__(image_name, skip)
-        self._update(
+        self.update(
             image_name=image_name,
             low_threshold=low_threshold,
             high_threshold=high_threshold,
@@ -607,6 +599,10 @@ class CannyEdge(ControlNetImgPreprocessor):
 
 class FaceDetailerNode(SimpleKSampler):
     """A class representing face detailer settings."""
+
+    @classmethod
+    def key(cls) -> str:
+        return "face_detailer"
 
     @property
     def sam_model_opt(self) -> Sam:
@@ -648,6 +644,11 @@ class FaceDetailerNode(SimpleKSampler):
         return base_dict
 
     def detailer_func(self, input_image: torch.Tensor, input_dict: dict) -> torch.Tensor:
+        """Function to process image once rotated."""
+        return self._process(input_image, input_dict)
+
+    # pylint: disable=W0221
+    def _process_impl(self, input_image: torch.Tensor, input_dict: dict) -> torch.Tensor:
         """Function to process image once rotated."""
 
         # 10.5 FaceDetailer
@@ -786,7 +787,7 @@ class FaceDetailerNode(SimpleKSampler):
         use_tune: bool,
     ):
         super().__init__(seed, steps, cfg, sampler_name, scheduler, denoise, use_tune)
-        self._update(
+        self.update(
             seed=seed,
             steps=steps,
             cfg=cfg,
@@ -820,10 +821,9 @@ class FaceDetailerNode(SimpleKSampler):
 class Rotator(MimicNode):
     """A class representing image rotation settings."""
 
-    @property
-    def angle(self) -> float:
-        """Returns the rotation angle."""
-        return self._angle
+    @classmethod
+    def key(cls) -> str:
+        return "rotator"
 
     # pylint: disable=W0221
     # pylint: disable=W0201
@@ -832,7 +832,7 @@ class Rotator(MimicNode):
 
     def __init__(self, angle: float):
         super().__init__()
-        self._update(angle=angle)
+        self.update(angle=angle)
 
     def rotate_image(self, image: torch.Tensor, func: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
         """Rotates the image by the specified angle, processes it, and rotates it back."""
@@ -913,6 +913,10 @@ class Rotator(MimicNode):
 class SkipLayers(MimicNode):
     """A class representing skip layer guidance settings."""
 
+    @classmethod
+    def key(cls) -> str:
+        return "skip_layers_model"
+
     CHECKPOINT_PATH = "sd3.5_medium.safetensors"
 
     def get_model(self, use_tuned: bool) -> ModelPatcher:
@@ -965,4 +969,4 @@ class SkipLayers(MimicNode):
 
     def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
         super().__init__()
-        self._update(layers=layers, scale=scale, start_percent=start_percent, end_percent=end_percent)
+        self.update(layers=layers, scale=scale, start_percent=start_percent, end_percent=end_percent)

@@ -1,9 +1,10 @@
 """Script to run a ControlNet flow with Triple CLIP and FaceDetailer integration."""
 
 import logging
+from typing import Callable
 from functools import partial
 import torch
-from comfy.sd import load_clip
+from comfy.sd import load_clip, CLIP
 import folder_paths
 from json_gui.scripts.controlnet_openpose.model import Model
 from json_gui.utils import AbsFlow
@@ -18,37 +19,68 @@ T5_PATH = "sd35m/t5xxl_fp16.safetensors"
 class Flow(AbsFlow):
     """ControlNet OpenPose Flow implementation."""
 
-    def _run_impl(self, steps: int) -> list[str]:
-        """Main function to run the ControlNet flow."""
+    @property
+    def clip(self) -> CLIP:
+        """Get the loaded CLIP model."""
+        return self._clip
 
-        def save_call(i: torch.Tensor, n: str) -> torch.Tensor:
-            return self.save_image(i, n, steps)
+    @property
+    def input_model(self) -> Model:
+        """Get the flow model inputs."""
+        return self._input_model
 
-        flow: Model = Model(self.json_path, save_call)
+    @input_model.setter
+    def input_model(self, value: int) -> None:
+        assert isinstance(value, int), "Flow input value must be an integer."
+        self.save_call = value
+        self._input_model.set_save_call(self.save_call)
+        self._input_model.update_json()
 
-        skip_layers_model = flow.skip_layers_model
+    @property
+    def save_call(self) -> Callable:
+        """Get the save image callback."""
+        return self._save_call
 
-        # 2. Load Triple CLIP
+    @save_call.setter
+    def save_call(self, value: int) -> None:
+        assert isinstance(value, int), "Save call value must be an integer."
+        self._save_call = lambda i, n, s=value: self.save_image(i, n, s)
+
+    def __init__(self, file_path: str, filename: str) -> None:
+        super().__init__(file_path, filename)
+
+        # Load Triple CLIP
         logging.info("Loading CLIPs...")
         clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_G_PATH)
         clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_L_PATH)
         clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", T5_PATH)
 
-        clip = load_clip(
+        clip: CLIP = load_clip(
             ckpt_paths=[clip_path1, clip_path2, clip_path3],
             embedding_directory=folder_paths.get_folder_paths("embeddings"),
         )
 
+        self._clip = clip
+        self.save_call = 1  # Default save call
+        self._input_model: Model = Model(self.json_path, self.save_call)
+
+    def _run_impl(self, steps: int) -> list[str]:
+        """Main function to run the ControlNet flow."""
+
+        self.input_model = steps
+
+        skip_layers_model = self.input_model.skip_layers_model
+
         # 6. Encode Prompts
-        positive_prompt: str = flow.positive
-        negative_prompt: str = flow.negative
+        positive_prompt: str = self.input_model.positive
+        negative_prompt: str = self.input_model.negative
 
         logging.info("Encoding prompts...")
-        tokens_pos = clip.tokenize(positive_prompt)
-        cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
+        tokens_pos = self.clip.tokenize(positive_prompt)
+        cond_pos = self.clip.encode_from_tokens_scheduled(tokens_pos)
 
-        tokens_neg = clip.tokenize(negative_prompt)
-        cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
+        tokens_neg = self.clip.tokenize(negative_prompt)
+        cond_neg = self.clip.encode_from_tokens_scheduled(tokens_neg)
 
         del tokens_pos
         del tokens_neg
@@ -56,12 +88,12 @@ class Flow(AbsFlow):
 
         # Run control net conditionings
         logging.info("Applying ControlNet conditionings...")
-        for cnet in flow.apply_control_net:
+        for cnet in self.input_model.apply_control_net:
             cond_pos, cond_neg = cnet.conditionals(cond_pos, cond_neg, skip_layers_model.vae)
 
-        latent_image = flow.empty_latent.latent
+        latent_image = self.input_model.empty_latent.latent
 
-        for sampler_idx, current_sampler in enumerate(flow.simple_k_sampler):
+        for sampler_idx, current_sampler in enumerate(self.input_model.simple_k_sampler):
             logging.info("Running Sampler %d...", sampler_idx)
 
             latent_image = current_sampler.process(
@@ -82,14 +114,14 @@ class Flow(AbsFlow):
             self.save_image(images, f"sampler-{sampler_idx}", steps)
 
         input_dict = {
-            "model": skip_layers_model.get_model(flow.face_detailer.use_tune),
-            "clip": clip,
+            "model": skip_layers_model.get_model(self.input_model.face_detailer.use_tune),
+            "clip": self.clip,
             "vae": skip_layers_model.vae,
             "positive": cond_pos,
             "negative": cond_neg,
         }
-        face_task = partial(flow.face_detailer.detailer_func, input_dict=input_dict)
-        detailed_image: torch.Tensor = flow.rotator.rotate_image(images, face_task)
+        face_task = partial(self.input_model.face_detailer.detailer_func, input_dict=input_dict)
+        detailed_image: torch.Tensor = self.input_model.rotator.rotate_image(images, face_task)
 
         self.save_image(detailed_image, "output", steps, False)
 
