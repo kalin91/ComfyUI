@@ -485,6 +485,7 @@ class JSONManagerApp:
         def load_file() -> None:
             """Load the selected JSON file and execute the flow."""
             try:
+                logging.info("Loading JSON file: %s", filepath)
                 with open(filepath, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.json_editor.load_data(data, body)
@@ -496,6 +497,7 @@ class JSONManagerApp:
                 # Check memory status before execution
                 if not self._check_memory_available():
                     raise MemoryError("GPU memory is too fragmented. Please restart the application.")
+                logging.info("Creating Flow instance for file: %s", filepath)
                 assert self.flow is not None, "Flow class is not set"
                 assert issubclass(self.flow, gui_utils.AbsFlow), "Flow must be a subclass of AbsFlow"
                 # Execute the flow

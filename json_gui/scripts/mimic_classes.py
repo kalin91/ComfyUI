@@ -1,7 +1,6 @@
-"""Mimic classes for various components."""
+"""Mimic child classes for various components."""
 
 import inspect
-import os
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Optional
@@ -13,7 +12,7 @@ from comfy_extras.nodes_sd3 import SkipLayerGuidanceSD3
 from comfy_extras.nodes_images import ResizeAndPadImage
 from comfy_extras.nodes_mask import MaskToImage
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
-from comfy.sd import load_checkpoint_guess_config, VAE
+from comfy.sd import load_checkpoint_guess_config, VAE, CLIP
 from comfy.model_patcher import ModelPatcher
 from comfy.controlnet import load_controlnet
 from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
@@ -24,131 +23,8 @@ from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoade
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
 from nodes import ControlNetApplyAdvanced
 import folder_paths
-import node_helpers
-from PIL import Image, ImageOps, ImageSequence
-
-
-def safe_reference_compare(var1, var2) -> bool:
-    """
-    if var1 and var2 are of basic types (int, float, str, bool, tuple, bytes, NoneType),
-    compare by value (==); else compare by identity (is).
-    """
-
-    optimizable_types = (int, str, float, bool, tuple, bytes, type(None))
-
-    if isinstance(var1, optimizable_types):
-        # For basic types, we can safely compare by value
-        # assuming their __eq__ methods are standard and safe.
-        return var1 == var2
-
-    # 2. For EVERYTHING else (lists, dicts, your own classes, etc.)
-    # we use 'is' to avoid triggering custom or slow __eq__ methods.
-    return var1 is var2
-
-
-class MimicNode(ABC):
-    """A mimic class for various nodes."""
-
-    @classmethod
-    @abstractmethod
-    def key(cls) -> str:
-        """Returns the key for the mimic node."""
-
-    def _feed_function(self, func, /, *args, **kwargs) -> Any:
-        """Calls func with only the keyword arguments that it accepts."""
-        logging.debug("Feeding function %s with args: %s and kwargs: %s", func.__name__, args, list(kwargs.keys()))
-        sig = inspect.signature(func)
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-        return func(*args, **filtered_kwargs)
-
-    @property
-    def init_args(self) -> dict[str, Any]:
-        """Returns the last arguments used."""
-        return self._init_args
-
-    @property
-    def exec_args(self) -> dict[str, Any]:
-        """Returns the last execution arguments used."""
-        return self._exec_args
-
-    @property
-    def last_output(self) -> Optional[Any]:
-        """Returns the last outputs produced."""
-        return self._last_output
-
-    @property
-    def save_tensor(self) -> Optional[Callable[[torch.Tensor], None]]:
-        """Returns a function to save the tensor."""
-        return self._save_tensor
-
-    @save_tensor.setter
-    def save_tensor(self, value: Callable[[torch.Tensor], None]) -> None:
-        """Sets the function to save the tensor."""
-        assert callable(value), "save_tensor must be a callable function."
-        self._save_tensor = value
-
-    def __init__(self):
-        self._save_tensor: Optional[Callable[[torch.Tensor, str], None]] = None
-        self._return_cache = False
-        self._init_args: dict[str, Any] = {}
-        self._exec_args: dict[str, Any] = {}
-        self._last_output: Optional[Any] = None
-
-    def update(self, *args, **kwargs) -> None:
-        """Updates the node."""
-        try:
-            if not self._return_cache or not self.__use_cache(self._init_args, *args, **kwargs):
-                logging.info("Updating %s", self.__class__.__name__)
-                self._update_impl(*args, **kwargs)
-                self._init_args = {"args": args, "kwargs": kwargs}
-                self._last_output = None
-        except Exception as e:
-            logging.exception("Error updating %s: %s", self.__class__.__name__, str(e))
-            raise e
-
-    @abstractmethod
-    def _update_impl(self, *args, **kwargs) -> None:
-        """Abstract method to update the node."""
-
-    @abstractmethod
-    def _process_impl(self, *args, **kwargs) -> Any:
-        """Abstract method to process data."""
-
-    def _process(self, *args, **kwargs) -> Any:
-        """Processes data and returns the result, using caching if available."""
-        if self._return_cache and self._last_output is not None and self.__use_cache(self._exec_args, *args, **kwargs):
-            logging.info("Using cached output for %s", self.__class__.__name__)
-            return self._last_output
-        self._return_cache = False
-        logging.info("Processing %s", self.__class__.key())
-        res = self._feed_function(self._process_impl, *args, **kwargs)
-        self._exec_args = {"args": args, "kwargs": kwargs}
-        self._last_output = res
-        self._return_cache = True
-        return res
-
-    def __use_cache(self, cached_args: dict, *args, **kwargs) -> bool:
-        """Evaluates whether to use cached output based on the provided arguments."""
-        cache_invalid: bool = False
-        if cached_args and "args" in cached_args and "kwargs" in cached_args:
-            cache_args = cached_args["args"]
-            cache_kwargs = cached_args["kwargs"]
-            for i, vl_1 in enumerate(args):
-                if len(cache_args) > i:
-                    vl_2 = cache_args[i]
-                    if safe_reference_compare(vl_1, vl_2):
-                        continue
-                cache_invalid = True
-                break
-            if not cache_invalid:
-                for key, vl_1 in kwargs.items():
-                    if key in cache_kwargs:
-                        vl_2 = cache_kwargs[key]
-                        if safe_reference_compare(vl_1, vl_2):
-                            continue
-                    cache_invalid = True
-                    break
-        return not cache_invalid
+from PIL import Image
+from json_gui.scripts.mimic import MimicNode, DataWrapper
 
 
 class ControlNetImgPreprocessor(MimicNode, ABC):
@@ -175,7 +51,8 @@ class ControlNetImgPreprocessor(MimicNode, ABC):
         """Processes the image and returns a tensor."""
         return self._process()
 
-    def _process_impl(self, *args, **kwargs) -> Any:
+    # pylint: disable=W0221
+    def _process_impl(self) -> Any:
         """Processes the image and returns a tensor."""
         res = self._tensor_impl(self._controlnet_img)
         if self._save_tensor:
@@ -197,30 +74,7 @@ class ControlNetImgPreprocessor(MimicNode, ABC):
     def _update_impl(self, image_name: str, skip: bool) -> None:
         """Updates the ControlNet image preprocessor."""
         self._skip = skip
-        assert image_name, "Image name must be provided for ControlNetImgPreprocessor."
-        logging.info("Loading ControlNet Image...")
-        input_folder = folder_paths.get_input_directory()
-        image_path = os.path.join(input_folder, image_name)
-        img = node_helpers.pillow(Image.open, image_path)
-
-        # Process image to tensor (similar to LoadImage node)
-        output_images = []
-        for i in ImageSequence.Iterator(img):
-            i = node_helpers.pillow(ImageOps.exif_transpose, i)
-            if i.mode == "I":
-                i = i.point(lambda i: i * (1 / 255))
-            image = i.convert("RGB")
-            image = np.array(image).astype(np.float32) / 255.0
-            image = torch.from_numpy(image)[None,]
-            output_images.append(image)
-
-        if len(output_images) > 1:
-            # If multiple frames, stack them? For now assume single image as per workflow
-            img_tensor = torch.cat(output_images, dim=0)
-        else:
-            img_tensor = output_images[0]
-
-        self._controlnet_img = img_tensor
+        self._controlnet_img = self._upload_image(image_name)
 
 
 class SimpleKSampler(MimicNode):
@@ -228,6 +82,7 @@ class SimpleKSampler(MimicNode):
 
     @classmethod
     def key(cls) -> str:
+        """Returns the key for the SimpleKSampler."""
         return "simple_k_sampler"
 
     @property
@@ -341,23 +196,114 @@ class SimpleKSampler(MimicNode):
         return comfy.sample.sample(**sampler_arguments)
 
 
+class Prompts(MimicNode):
+    """A class representing positive and negative prompts."""
+
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the Prompts."""
+        return "prompts"
+
+    @property
+    def positive(self) -> str:
+        """Returns the positive prompt."""
+        return self._positive
+
+    @property
+    def negative(self) -> str:
+        """Returns the negative prompt."""
+        return self._negative
+
+    def get_prompts(
+        self, clip: CLIP
+    ) -> tuple[list[tuple[torch.Tensor, dict[str, Any]]], list[tuple[torch.Tensor, dict[str, Any]]]]:
+        """Returns the encoded positive and negative prompts."""
+        return self._process(clip=clip)
+
+    # pylint: disable=W0221
+    def _process_impl(
+        self, clip: CLIP
+    ) -> tuple[list[tuple[torch.Tensor, dict[str, Any]]], list[tuple[torch.Tensor, dict[str, Any]]]]:
+        """Encodes the positive and negative prompts using the provided CLIP model."""
+        logging.info("Encoding prompts...")
+        tokens_pos = clip.tokenize(self.positive)
+        cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
+
+        tokens_neg = clip.tokenize(self.negative)
+        cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
+
+        del tokens_pos
+        del tokens_neg
+        torch.cuda.empty_cache()
+        return (cond_pos, cond_neg)
+
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, positive: str, negative: str) -> None:
+        self._positive = positive
+        self._negative = negative
+
+    def __init__(self, positive: str, negative: str):
+        super().__init__()
+        self.update(positive=positive, negative=negative)
+
+
 class EmptyLatent(MimicNode):
     """An empty latent class for placeholder purposes."""
 
     @classmethod
     def key(cls) -> str:
+        """Returns the key for the EmptyLatent."""
         return "empty_latent"
 
     @property
-    def latent(self) -> torch.Tensor:
+    def start_img(self) -> Optional[torch.Tensor]:
+        """Returns the starting image tensor, if any."""
+        return self._start_img
+
+    def latent(self, vae: VAE) -> torch.Tensor:
         """Generates and returns an empty latent tensor."""
-        return self._process()
+        return self._process(vae=vae)
 
     # pylint: disable=W0221
-    def _process_impl(self) -> torch.Tensor:
+    def _process_impl(self, vae: VAE) -> torch.Tensor:
         """Generates and returns an empty latent tensor."""
-        logging.info("Creating empty latent %sx%s...", self._width, self._height)
+        if self.start_img is not None:
+            logging.info("Creating latent from start image...")
 
+            if vae is None:
+                raise ValueError(
+                    "VAE is required to encode start_img to latent space. "
+                    "Please provide vae parameter when creating EmptyLatent with image_name."
+                )
+
+            # Redim the image  to the expected size
+            start_img = self.start_img
+            current_height, current_width = start_img.shape[1], start_img.shape[2]
+
+            if current_height != self._height or current_width != self._width:
+                logging.info(
+                    "Resizing start image from %sx%s to %sx%s...",
+                    current_width,
+                    current_height,
+                    self._width,
+                    self._height,
+                )
+                # Permute: [B, H, W, C] -> [B, C, H, W] for interpolation
+                start_img = start_img.permute(0, 3, 1, 2)
+                start_img = torch.nn.functional.interpolate(
+                    start_img, size=(self._height, self._width), mode="bilinear", align_corners=False
+                )
+                # Permute back: [B, C, H, W] -> [B, H, W, C]
+                start_img = start_img.permute(0, 2, 3, 1)
+
+            logging.info("Encoding start image to latent space with VAE...")
+            latent = vae.encode(start_img)
+            logging.info("Encoded latent shape: %s", latent.shape)
+
+            return latent
+
+        logging.info("Creating empty latent %sx%s...", self._width, self._height)
         return torch.zeros(
             [self._batch_size, 16, self._height // 8, self._width // 8],
             device=comfy.model_management.intermediate_device(),
@@ -365,14 +311,15 @@ class EmptyLatent(MimicNode):
 
     # pylint: disable=W0221
     # pylint: disable=W0201
-    def _update_impl(self, width: int, height: int, batch_size: int) -> None:
+    def _update_impl(self, width: int, height: int, batch_size: int, image_name: Optional[str]) -> None:
         self._width = width
         self._height = height
         self._batch_size = batch_size
+        self._start_img = self._upload_image(image_name) if image_name and image_name != "<None>" else None
 
-    def __init__(self, width: int, height: int, batch_size: int):
+    def __init__(self, width: int, height: int, batch_size: int, image_name: str):
         super().__init__()
-        self.update(width=width, height=height, batch_size=batch_size)
+        self.update(width=width, height=height, batch_size=batch_size, image_name=image_name)
 
 
 class ApplyControlNet(MimicNode):
@@ -380,6 +327,7 @@ class ApplyControlNet(MimicNode):
 
     @classmethod
     def key(cls) -> str:
+        """Returns the key for the ApplyControlNet."""
         return "apply_control_net"
 
     @property
@@ -446,6 +394,7 @@ class OpenPosePose(ControlNetImgPreprocessor):
 
     @classmethod
     def key(cls) -> str:
+        """Returns the key for the OpenPosePose."""
         return "openpose_pose"
 
     @property
@@ -531,6 +480,7 @@ class CannyEdge(ControlNetImgPreprocessor):
 
     @classmethod
     def key(cls) -> str:
+        """Returns the key for the CannyEdge."""
         return "canny_edge"
 
     @property
@@ -643,12 +593,12 @@ class FaceDetailerNode(SimpleKSampler):
         )
         return base_dict
 
-    def detailer_func(self, input_image: torch.Tensor, input_dict: dict) -> torch.Tensor:
+    def detailer_func(self, input_image: torch.Tensor, **kwargs) -> torch.Tensor:
         """Function to process image once rotated."""
-        return self._process(input_image, input_dict)
+        return self._process(input_image, **kwargs)
 
     # pylint: disable=W0221
-    def _process_impl(self, input_image: torch.Tensor, input_dict: dict) -> torch.Tensor:
+    def _process_impl(self, input_image: torch.Tensor, **kwargs) -> torch.Tensor:
         """Function to process image once rotated."""
 
         # 10.5 FaceDetailer
@@ -667,7 +617,7 @@ class FaceDetailerNode(SimpleKSampler):
 
         face_arguments = self.to_dict()
 
-        face_arguments.update(input_dict)
+        face_arguments.update(kwargs)
 
         face_arguments.update(
             {
@@ -823,6 +773,7 @@ class Rotator(MimicNode):
 
     @classmethod
     def key(cls) -> str:
+        """Returns the key for the Rotator."""
         return "rotator"
 
     # pylint: disable=W0221
@@ -915,6 +866,7 @@ class SkipLayers(MimicNode):
 
     @classmethod
     def key(cls) -> str:
+        """Returns the key for the SkipLayers."""
         return "skip_layers_model"
 
     CHECKPOINT_PATH = "sd3.5_medium.safetensors"
@@ -924,12 +876,12 @@ class SkipLayers(MimicNode):
         return self._process_impl(use_tuned)
 
     # pylint: disable=W0221
-    def _process_impl(self, use_tuned: bool) -> ModelPatcher:
+    def _process_impl(self, use_tuned: bool) -> DataWrapper[ModelPatcher]:
         """Returns the tuned model."""
         return self._tunned_model if use_tuned else self._base_model
 
     @property
-    def vae(self) -> VAE:
+    def vae(self) -> DataWrapper[VAE]:
         """Returns the VAE."""
         return self._vae
 
@@ -944,7 +896,7 @@ class SkipLayers(MimicNode):
         comfy.model_management.soft_empty_cache()
 
         ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", self.CHECKPOINT_PATH)
-        self._base_model, _a, self._vae, _b = load_checkpoint_guess_config(
+        base_model, _a, vae, _b = load_checkpoint_guess_config(
             ckpt_path,
             output_vae=True,
             output_clip=False,
@@ -954,16 +906,18 @@ class SkipLayers(MimicNode):
         self._scale = scale
         self._start_percent = start_percent
         self._end_percent = end_percent
+        self._vae = DataWrapper(vae)
+        self._base_model = DataWrapper(base_model)
 
         if self._layers:
             result: tuple = SkipLayerGuidanceSD3.execute(
-                self._base_model,
+                self._base_model.get(),
                 self._layers,
                 self._scale,
                 self._start_percent,
                 self._end_percent,
             )
-            self._tunned_model = result[0]
+            self._tunned_model = DataWrapper(result[0])
         else:
             self._tunned_model = self._base_model
 

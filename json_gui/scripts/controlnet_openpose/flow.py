@@ -71,27 +71,15 @@ class Flow(AbsFlow):
 
         skip_layers_model = self.input_model.skip_layers_model
 
-        # 6. Encode Prompts
-        positive_prompt: str = self.input_model.positive
-        negative_prompt: str = self.input_model.negative
-
-        logging.info("Encoding prompts...")
-        tokens_pos = self.clip.tokenize(positive_prompt)
-        cond_pos = self.clip.encode_from_tokens_scheduled(tokens_pos)
-
-        tokens_neg = self.clip.tokenize(negative_prompt)
-        cond_neg = self.clip.encode_from_tokens_scheduled(tokens_neg)
-
-        del tokens_pos
-        del tokens_neg
-        torch.cuda.empty_cache()
+        # Encode Prompts
+        cond_pos, cond_neg = self.input_model.prompts.get_prompts(self.clip)
 
         # Run control net conditionings
         logging.info("Applying ControlNet conditionings...")
         for cnet in self.input_model.apply_control_net:
             cond_pos, cond_neg = cnet.conditionals(cond_pos, cond_neg, skip_layers_model.vae)
 
-        latent_image = self.input_model.empty_latent.latent
+        latent_image = self.input_model.empty_latent.latent(skip_layers_model.vae)
 
         for sampler_idx, current_sampler in enumerate(self.input_model.simple_k_sampler):
             logging.info("Running Sampler %d...", sampler_idx)
@@ -102,7 +90,7 @@ class Flow(AbsFlow):
 
             # Decode
             logging.info("Decoding...")
-            images = skip_layers_model.vae.decode(latent_image.clone())
+            images = skip_layers_model.vae.get().decode(latent_image.clone())
             logging.info("VAE Output Shape: %s", images.shape)
 
             # Ensure BHWC (Batch, Height, Width, Channels)
@@ -120,7 +108,7 @@ class Flow(AbsFlow):
             "positive": cond_pos,
             "negative": cond_neg,
         }
-        face_task = partial(self.input_model.face_detailer.detailer_func, input_dict=input_dict)
+        face_task = partial(self.input_model.face_detailer.detailer_func, **input_dict)
         detailed_image: torch.Tensor = self.input_model.rotator.rotate_image(images, face_task)
 
         self.save_image(detailed_image, "output", steps, False)

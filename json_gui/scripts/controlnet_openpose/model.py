@@ -6,7 +6,7 @@ import logging
 from typing import Any, Callable, Optional, cast
 
 import torch
-from json_gui.mimic_classes import (
+from json_gui.scripts.mimic_classes import (
     ControlNetImgPreprocessor,
     OpenPosePose,
     CannyEdge,
@@ -17,6 +17,7 @@ from json_gui.mimic_classes import (
     Rotator,
     SkipLayers,
     MimicNode,
+    Prompts
 )
 
 
@@ -30,22 +31,9 @@ class Model:
         self._save_call = value
 
     @property
-    def positive(self) -> str:
-        """Returns the positive prompt."""
-        return self._positive
-
-    @property
-    def negative(self) -> str:
+    def prompts(self) -> Prompts:
         """Returns the negative prompt."""
-        return self._negative
-
-    @positive.setter
-    def positive(self, value: str) -> None:
-        self._positive = value
-
-    @negative.setter
-    def negative(self, value: str) -> None:
-        self._negative = value
+        return self._prompts
 
     @property
     def apply_control_net(self) -> list[ApplyControlNet]:
@@ -117,8 +105,7 @@ class Model:
             cnet["target"] = target_inst
             cnet_dicts[target_name] = ApplyControlNet(**cnet)
         self._apply_control_net.extend([v for v in cnet_dicts.values() if v is not None])
-        self._positive = json_props["positive"]
-        self._negative = json_props["negative"]
+        self._prompts = Prompts(**json_props[Prompts.key()])
         self._empty_latent = EmptyLatent(**json_props[EmptyLatent.key()])
         self._simple_k_sampler = [SimpleKSampler(**s) for s in json_props[SimpleKSampler.key()]]
         self._face_detailer = FaceDetailerNode(**json_props[FaceDetailerNode.key()])
@@ -130,8 +117,6 @@ class Model:
         """Loads the flow data from the JSON file."""
         with open(self._file_path, "r", encoding="utf-8") as file:
             json_props: dict[str, Any] = json.load(file)
-        self.positive = json_props["positive"]
-        self.negative = json_props["negative"]
         for name, value in vars(self).items():
             assert value is not None, f"Property {name} is None."
             is_list = False
