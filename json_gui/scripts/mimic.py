@@ -220,6 +220,48 @@ class MimicNode(ABC):
         return not cache_invalid
 
 
+def _node_executor_target(
+    node_cls: type[MimicNode],
+    node_init_args: dict[str, Any],
+    node_exec_args: dict[str, Any],
+    raw_nodes_serialized: dict[str, tuple[type[MimicNode], dict[str, Any]]],
+    result_queue: mlp.Queue,
+) -> None:
+    """
+    Top-level function to execute a MimicNode in a child process.
+
+    This function is pickle-able because it's defined at module level.
+    It receives only serializable data (classes + dicts), not instances with callbacks.
+    """
+    try:
+        # Reconstruct the main node from its class and init args
+        node = node_cls(**node_init_args)
+
+        # Reconstruct raw_nodes and add them to exec_args
+        for key, (cls, init_args) in raw_nodes_serialized.items():
+            node_exec_args[key] = cls(**init_args)
+
+        # Execute the node
+        output = node.process(**node_exec_args)
+        result_queue.put(("success", output))
+    except Exception as e:
+        logging.exception("Error executing %s in child process", node_cls.__name__)
+        result_queue.put(("error", e))
+
+
+def _worker_target(flow_queue: mlp.Queue) -> Optional[Any]:
+    """
+    Top-level wrapper that c_logger.worker_wrapper will call.
+
+    Unpacks arguments from the flow_queue and calls _node_executor_target.
+    """
+    # Get the serialized arguments from the queue
+    args = flow_queue.get()
+    node_cls, node_init_args, node_exec_args, raw_nodes_serialized, result_queue = args
+    _node_executor_target(node_cls, node_init_args, node_exec_args, raw_nodes_serialized, result_queue)
+    return None
+
+
 class NodeExecutor:
     """Class to execute mimic nodes with multiprocessing support."""
 
@@ -239,42 +281,200 @@ class NodeExecutor:
         return self._node_process_args
 
     @property
-    def queue(self) -> mlp.Queue:
-        """Get the multiprocessing queue."""
-        return self._queue
+    def result_queue(self) -> mlp.Queue:
+        """Get the multiprocessing result queue."""
+        return self._result_queue
 
     def __init__(
         self,
         node: MimicNode,
         node_process_args: dict[str, Any],
-        queue: mlp.Queue,
-        raw_nodes: dict[MimicNode, dict[str, Any]],
+        raw_nodes: Optional[dict[MimicNode, dict[str, Any]]] = None,
     ):
+        """
+        Initialize the NodeExecutor.
+
+        Args:
+            node: The MimicNode instance to execute.
+            node_process_args: Arguments to pass to node.process().
+            raw_nodes: Optional dict mapping MimicNode instances to their init_args.
+                       These will be reconstructed in the child process and added to node_process_args.
+        """
         self._node: MimicNode = node
         self._node_process_args: dict[str, Any] = node_process_args
-        self._queue: mlp.Queue = queue
-        self._raw_nodes: dict[MimicNode, dict[str, Any]] = raw_nodes
+        self._raw_nodes: dict[MimicNode, dict[str, Any]] = raw_nodes or {}
 
-    def execute(self) -> tuple:
-        # create a pickeable empty copy of node_process_args
+        # Use spawn context from p_logger to avoid CUDA fork issues
+        mp_context = p_logger.get_mp_context()
+        self._result_queue: mlp.Queue = mp_context.Queue()
+        self._log_queue: mlp.Queue = p_logger.get_log_queue()
+        self._mp_context = mp_context
+        self._process: Optional[mlp.Process] = None
+
+    def _serialize_for_child(self) -> tuple[
+        type[MimicNode],
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, tuple[type[MimicNode], dict[str, Any]]],
+    ]:
+        """
+        Serialize all data needed by the child process.
+
+        Returns pickleable data only: classes and dicts, not instances with callbacks.
+        """
+        # Get the class and init_args from the main node
         node_cls = self._node.__class__
-        new_node = node_cls(**self._node.init_args)
-        del new_node.init_args
+        node_init_args = dict(self._node.init_args.get("kwargs", {}))
 
-    @classmethod
-    def _executable(
-        cls,
-        node: MimicNode,
-        node_exec_args: dict[str, Any],
-        queue: mlp.Queue,
-        raw_nodes: dict[MimicNode, dict[str, Any]],
-    ) -> None:
-        """Executes the node and puts the result in the queue."""
-        try:
-            for t, args in raw_nodes.items():
-                node_exec_args[t.key()] = t(**args)
-            output = node.process(**node_exec_args)
-            queue.put(output)
-        except Exception as e:
-            logging.exception("Error executing %s", node.__class__.key())
-            queue.put(e)
+        # Filter node_process_args to only include pickleable items
+        # (exclude MimicNode instances - they'll be in raw_nodes)
+        node_exec_args = {}
+        for key, value in self._node_process_args.items():
+            if not isinstance(value, MimicNode):
+                node_exec_args[key] = value
+
+        # Serialize raw_nodes: key -> (class, init_args)
+        raw_nodes_serialized: dict[str, tuple[type[MimicNode], dict[str, Any]]] = {}
+        for node_inst, init_args in self._raw_nodes.items():
+            raw_nodes_serialized[node_inst.key()] = (node_inst.__class__, init_args)
+
+        return node_cls, node_init_args, node_exec_args, raw_nodes_serialized
+
+    def execute(self, timeout: Optional[float] = None, poll_interval: float = 0.1) -> Any:
+        """
+        Execute the node in a child process and return the result.
+
+        Args:
+            timeout: Maximum time to wait for result (None = wait forever).
+            poll_interval: How often to poll the log queue while waiting.
+
+        Returns:
+            The output from node.process().
+
+        Raises:
+            Exception: If the child process raised an exception.
+            TimeoutError: If timeout is reached.
+        """
+        node_cls, node_init_args, node_exec_args, raw_nodes_serialized = self._serialize_for_child()
+
+        # Create a queue to pass arguments to the child (since we can't use lambdas with spawn)
+        args_queue: mlp.Queue = self._mp_context.Queue()
+        args_queue.put((node_cls, node_init_args, node_exec_args, raw_nodes_serialized, self._result_queue))
+
+        # Create the child process using spawn context
+        self._process = self._mp_context.Process(
+            target=c_logger.worker_wrapper,
+            args=(
+                _worker_target,
+                self._log_queue,
+                args_queue,
+            ),
+        )
+
+        self._process.start()
+
+        # Poll log queue while waiting for result
+        import time
+
+        start_time = time.time()
+
+        while self._process.is_alive():
+            # Poll logs from child
+            p_logger.poll_log_queue()
+
+            # Check timeout
+            if timeout is not None and (time.time() - start_time) > timeout:
+                self._process.terminate()
+                self._process.join(timeout=5)
+                raise TimeoutError(f"Node execution timed out after {timeout}s")
+
+            time.sleep(poll_interval)
+
+        # Process finished - drain remaining logs
+        p_logger.poll_log_queue()
+
+        # Get result from queue
+        if self._result_queue.empty():
+            raise RuntimeError("Child process ended without returning a result")
+
+        status, result = self._result_queue.get()
+
+        if status == "error":
+            raise result
+
+        return result
+
+    def execute_async(self) -> "NodeExecutor":
+        """
+        Start the node execution in a child process without waiting.
+
+        Use poll() to check for completion and get_result() to retrieve the result.
+
+        Returns:
+            self, for method chaining.
+        """
+        node_cls, node_init_args, node_exec_args, raw_nodes_serialized = self._serialize_for_child()
+
+        # Create a queue to pass arguments to the child
+        args_queue: mlp.Queue = self._mp_context.Queue()
+        args_queue.put((node_cls, node_init_args, node_exec_args, raw_nodes_serialized, self._result_queue))
+
+        self._process = self._mp_context.Process(
+            target=c_logger.worker_wrapper,
+            args=(
+                _worker_target,
+                self._log_queue,
+                args_queue,
+            ),
+        )
+
+        self._process.start()
+        return self
+
+    def poll(self) -> bool:
+        """
+        Poll logs from child and check if execution is complete.
+
+        Returns:
+            True if execution is complete, False if still running.
+        """
+        p_logger.poll_log_queue()
+        return self._process is not None and not self._process.is_alive()
+
+    def get_result(self) -> Any:
+        """
+        Get the result after execution is complete.
+
+        Call poll() first to ensure execution is complete.
+
+        Returns:
+            The output from node.process().
+
+        Raises:
+            Exception: If the child process raised an exception.
+            RuntimeError: If no result is available.
+        """
+        if self._process is None:
+            raise RuntimeError("No process has been started")
+
+        if self._process.is_alive():
+            raise RuntimeError("Process is still running")
+
+        # Drain remaining logs
+        p_logger.poll_log_queue()
+
+        if self._result_queue.empty():
+            raise RuntimeError("Child process ended without returning a result")
+
+        status, result = self._result_queue.get()
+
+        if status == "error":
+            raise result
+
+        return result
+
+    def terminate(self) -> None:
+        """Terminate the child process if running."""
+        if self._process is not None and self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=5)
