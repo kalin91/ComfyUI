@@ -47,10 +47,6 @@ class ControlNetImgPreprocessor(MimicNode, ABC):
         """Returns whether to skip this preprocessor."""
         return self._skip
 
-    def tensor(self) -> torch.Tensor:
-        """Processes the image and returns a tensor."""
-        return self._process()
-
     # pylint: disable=W0221
     def _process_impl(self) -> Any:
         """Processes the image and returns a tensor."""
@@ -152,12 +148,6 @@ class SimpleKSampler(MimicNode):
             "denoise": self._denoise,
         }
 
-    def process(
-        self, latent_image: torch.Tensor, model: ModelPatcher, cond_pos_cnet: Any, cond_neg_cnet: Any
-    ) -> torch.Tensor:
-        """Processes the latent image using the sampler."""
-        return self._process(latent_image, model, cond_pos_cnet, cond_neg_cnet)
-
     # pylint: disable=W0221
     def _process_impl(
         self, latent_image: torch.Tensor, model: ModelPatcher, cond_pos_cnet: Any, cond_neg_cnet: Any
@@ -214,12 +204,6 @@ class Prompts(MimicNode):
         """Returns the negative prompt."""
         return self._negative
 
-    def get_prompts(
-        self, clip: CLIP
-    ) -> tuple[list[tuple[torch.Tensor, dict[str, Any]]], list[tuple[torch.Tensor, dict[str, Any]]]]:
-        """Returns the encoded positive and negative prompts."""
-        return self._process(clip=clip)
-
     # pylint: disable=W0221
     def _process_impl(
         self, clip: CLIP
@@ -260,10 +244,6 @@ class EmptyLatent(MimicNode):
     def start_img(self) -> Optional[torch.Tensor]:
         """Returns the starting image tensor, if any."""
         return self._start_img
-
-    def latent(self, vae: VAE) -> torch.Tensor:
-        """Generates and returns an empty latent tensor."""
-        return self._process(vae=vae)
 
     # pylint: disable=W0221
     def _process_impl(self, vae: VAE) -> torch.Tensor:
@@ -334,10 +314,6 @@ class ApplyControlNet(MimicNode):
     def target(self) -> ControlNetImgPreprocessor:
         """Returns the target ControlNet image preprocessor."""
         return self._target
-
-    def conditionals(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
-        """Generates conditionals using the ControlNet preprocessor."""
-        return self._process(cond_pos, cond_neg, vae)
 
     # pylint: disable=W0221
     def _process_impl(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
@@ -593,10 +569,6 @@ class FaceDetailerNode(SimpleKSampler):
         )
         return base_dict
 
-    def detailer_func(self, input_image: torch.Tensor, **kwargs) -> torch.Tensor:
-        """Function to process image once rotated."""
-        return self._process(input_image, **kwargs)
-
     # pylint: disable=W0221
     def _process_impl(self, input_image: torch.Tensor, **kwargs) -> torch.Tensor:
         """Function to process image once rotated."""
@@ -784,10 +756,6 @@ class Rotator(MimicNode):
     def __init__(self, angle: float):
         super().__init__()
         self.update(angle=angle)
-
-    def rotate_image(self, image: torch.Tensor, func: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
-        """Rotates the image by the specified angle, processes it, and rotates it back."""
-        return self._process(image, func)
 
     # pylint: disable=W0221
     def _process_impl(self, image: torch.Tensor, func: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:

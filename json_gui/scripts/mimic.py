@@ -8,9 +8,11 @@ import os
 import inspect
 import numpy as np
 import torch
+from torch import Tensor, multiprocessing as mlp
 from PIL import Image, ImageOps, ImageSequence
 import node_helpers
 import folder_paths
+from json_gui import p_logger, c_logger
 
 T = TypeVar("T")
 
@@ -100,6 +102,11 @@ class MimicNode(ABC):
         """Returns the last arguments used."""
         return self._init_args
 
+    @init_args.deleter
+    def init_args(self) -> None:
+        """Deletes the cached init arguments."""
+        self._init_args = {}
+
     @property
     def exec_args(self) -> dict[str, Any]:
         """Returns the last execution arguments used."""
@@ -111,24 +118,24 @@ class MimicNode(ABC):
         return self._last_output
 
     @property
-    def save_tensor(self) -> Optional[Callable[[torch.Tensor], None]]:
+    def save_tensor(self) -> Optional[Callable[[Tensor], None]]:
         """Returns a function to save the tensor."""
         return self._save_tensor
 
     @save_tensor.setter
-    def save_tensor(self, value: Callable[[torch.Tensor], None]) -> None:
+    def save_tensor(self, value: Callable[[Tensor], None]) -> None:
         """Sets the function to save the tensor."""
         assert callable(value), "save_tensor must be a callable function."
         self._save_tensor = value
 
     def __init__(self):
-        self._save_tensor: Optional[Callable[[torch.Tensor, str], None]] = None
+        self._save_tensor: Optional[Callable[[Tensor, str], None]] = None
         self._return_cache = False
         self._init_args: dict[str, Any] = {}
         self._exec_args: dict[str, Any] = {}
         self._last_output: Optional[Any] = None
 
-    def _upload_image(self, image_name: str) -> torch.Tensor:
+    def _upload_image(self, image_name: str) -> Tensor:
         """Uploads an image given its name."""
         assert image_name, "Image name must be provided for ControlNetImgPreprocessor."
         logging.info("Loading %s Image...", self.__class__.key())
@@ -175,7 +182,7 @@ class MimicNode(ABC):
     def _process_impl(self, *args, **kwargs) -> Any:
         """Abstract method to process data."""
 
-    def _process(self, *args, **kwargs) -> Any:
+    def process(self, *args, **kwargs) -> Any:
         """Processes data and returns the result, using caching if available."""
         if self._return_cache and self._last_output is not None and self.__use_cache(self._exec_args, *args, **kwargs):
             logging.info("====== Using cached output for %s ======", self.__class__.__name__)
@@ -211,3 +218,63 @@ class MimicNode(ABC):
                     cache_invalid = True
                     break
         return not cache_invalid
+
+
+class NodeExecutor:
+    """Class to execute mimic nodes with multiprocessing support."""
+
+    @property
+    def raw_nodes(self) -> dict[MimicNode, dict[str, Any]]:
+        """Get the list of raw mimic nodes."""
+        return self._raw_nodes
+
+    @property
+    def node(self) -> MimicNode:
+        """Get the mimic node."""
+        return self._node
+
+    @property
+    def node_process_args(self) -> dict[str, Any]:
+        """Get the node arguments."""
+        return self._node_process_args
+
+    @property
+    def queue(self) -> mlp.Queue:
+        """Get the multiprocessing queue."""
+        return self._queue
+
+    def __init__(
+        self,
+        node: MimicNode,
+        node_process_args: dict[str, Any],
+        queue: mlp.Queue,
+        raw_nodes: dict[MimicNode, dict[str, Any]],
+    ):
+        self._node: MimicNode = node
+        self._node_process_args: dict[str, Any] = node_process_args
+        self._queue: mlp.Queue = queue
+        self._raw_nodes: dict[MimicNode, dict[str, Any]] = raw_nodes
+
+    def execute(self) -> tuple:
+        # create a pickeable empty copy of node_process_args
+        node_cls = self._node.__class__
+        new_node = node_cls(**self._node.init_args)
+        del new_node.init_args
+
+    @classmethod
+    def _executable(
+        cls,
+        node: MimicNode,
+        node_exec_args: dict[str, Any],
+        queue: mlp.Queue,
+        raw_nodes: dict[MimicNode, dict[str, Any]],
+    ) -> None:
+        """Executes the node and puts the result in the queue."""
+        try:
+            for t, args in raw_nodes.items():
+                node_exec_args[t.key()] = t(**args)
+            output = node.process(**node_exec_args)
+            queue.put(output)
+        except Exception as e:
+            logging.exception("Error executing %s", node.__class__.key())
+            queue.put(e)
