@@ -1,10 +1,8 @@
 """Mimic Parent Class and Utilities."""
 
-import time
 import logging
 import uuid
-from functools import wraps, partial
-from typing import Any, Callable, Optional, Type, TypeVar, Generic
+from typing import Any, Callable, Optional, TypeVar, Generic
 from abc import ABC, abstractmethod
 import os
 import inspect
@@ -27,27 +25,9 @@ class DataWrapper(Generic[T]):
         """Get the unique identifier for this wrapper."""
         return self._identifier
 
-    @property
-    def is_latent_tensor(self) -> bool:
-        """Check if the wrapped value is a latent tensor."""
-        return self._is_latent_tensor
-
-    @property
-    def image_name(self) -> Optional[str]:
-        """Get the image name if applicable."""
-        return self._image_name
-
-    def __init__(
-        self,
-        value: T,
-        identifier: Optional[str] = None,
-        is_latent_tensor: bool = False,
-        image_name: Optional[str] = None,
-    ):
+    def __init__(self, value: T, identifier: Optional[str] = None):
         self.value: T = value
         self._identifier: str = identifier if identifier else str(uuid.uuid4())
-        self._is_latent_tensor: bool = is_latent_tensor
-        self._image_name: Optional[str] = image_name
 
     def get(self) -> T:
         """Get the wrapped value."""
@@ -75,47 +55,13 @@ def safe_reference_compare(var1, var2) -> bool:
     return var1 is var2
 
 
-class MimicNode(ABC, Generic[T]):
+class MimicNode(ABC):
     """A mimic class for various nodes."""
-
-    def process_args_dict(self, *args, **kwargs) -> dict[str, Any]:
-        """
-        Given args and kwargs, returns a dict mapping parameter names to values for _process_impl.
-        Useful for introspection, serialization, or dynamic invocation.
-        """
-        sig = inspect.signature(self._process_impl)
-        bound = sig.bind_partial(*args, **kwargs)
-        bound.apply_defaults()
-        return dict(bound.arguments)
 
     @classmethod
     @abstractmethod
     def key(cls) -> str:
         """Returns the key for the mimic node."""
-
-    @classmethod
-    def use_class_param(
-        cls: Type[T], processor: Callable[[T], dict[str, Any]]
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Decorator to extract a class parameter and process it."""
-        param = cls.key()
-
-        def decorator(func) -> Callable:
-            """Decorator function."""
-
-            @wraps(func)
-            def wrapper(*args, **kwargs) -> Any:
-                """Wrapper function."""
-                if param not in kwargs:
-                    raise TypeError(f"Missing required parameter: {param}")
-                node: T = kwargs.pop(param)
-                additional_params: dict[str, Any] = processor(node)
-                kwargs.update(additional_params)
-                return func(*args, **kwargs)
-
-            return wrapper
-
-        return decorator
 
     def _unwrap_data_dict(self, *args, **kwargs) -> tuple[list[Any], dict[str, Any]]:
         """Unwraps any DataWrapper instances in the provided dictionary."""
@@ -172,12 +118,12 @@ class MimicNode(ABC, Generic[T]):
         return self._last_output
 
     @property
-    def save_tensor(self) -> Optional[Callable[[Tensor, str], None]]:
+    def save_tensor(self) -> Optional[Callable[[Tensor], None]]:
         """Returns a function to save the tensor."""
         return self._save_tensor
 
     @save_tensor.setter
-    def save_tensor(self, value: Callable[[Tensor, str], None]) -> None:
+    def save_tensor(self, value: Callable[[Tensor], None]) -> None:
         """Sets the function to save the tensor."""
         assert callable(value), "save_tensor must be a callable function."
         self._save_tensor = value
@@ -279,8 +225,6 @@ def _node_executor_target(
     node_init_args: dict[str, Any],
     node_exec_args: dict[str, Any],
     raw_nodes_serialized: dict[str, tuple[type[MimicNode], dict[str, Any]]],
-    save_call: Callable[[dict[str, bool | list[str]], Tensor, str], None],
-    save_data: dict[str, bool | list[str]],
     result_queue: mlp.Queue,
 ) -> None:
     """
@@ -290,15 +234,8 @@ def _node_executor_target(
     It receives only serializable data (classes + dicts), not instances with callbacks.
     """
     try:
-        assert (
-            "last_saved_to_temp" in save_data and "created_images" in save_data
-        ), "Data dict must contain 'last_saved_to_temp' and 'created_images' keys."
-        logging.info("Executing %s in child process", node_cls.__name__)
         # Reconstruct the main node from its class and init args
-        node = node_cls(*node_init_args["args"], **node_init_args["kwargs"])
-        node.save_tensor = lambda tensor, identifier=node.__class__.key(), data=save_data: save_call(
-            data, tensor, identifier
-        )
+        node = node_cls(**node_init_args)
 
         # Reconstruct raw_nodes and add them to exec_args
         for key, (cls, init_args) in raw_nodes_serialized.items():
@@ -306,17 +243,30 @@ def _node_executor_target(
 
         # Execute the node
         output = node.process(**node_exec_args)
-        result_queue.put(("success", save_data, output))
+        result_queue.put(("success", output))
     except Exception as e:
         logging.exception("Error executing %s in child process", node_cls.__name__)
-        result_queue.put(("error", save_data, e))
+        result_queue.put(("error", e))
+
+
+def _worker_target(flow_queue: mlp.Queue) -> Optional[Any]:
+    """
+    Top-level wrapper that c_logger.worker_wrapper will call.
+
+    Unpacks arguments from the flow_queue and calls _node_executor_target.
+    """
+    # Get the serialized arguments from the queue
+    args = flow_queue.get()
+    node_cls, node_init_args, node_exec_args, raw_nodes_serialized, result_queue = args
+    _node_executor_target(node_cls, node_init_args, node_exec_args, raw_nodes_serialized, result_queue)
+    return None
 
 
 class NodeExecutor:
     """Class to execute mimic nodes with multiprocessing support."""
 
     @property
-    def raw_nodes(self) -> dict[str, tuple[type[MimicNode], dict[str, Any]]]:
+    def raw_nodes(self) -> dict[MimicNode, dict[str, Any]]:
         """Get the list of raw mimic nodes."""
         return self._raw_nodes
 
@@ -332,43 +282,65 @@ class NodeExecutor:
 
     @property
     def result_queue(self) -> mlp.Queue:
-        """Get the multiprocessing queue."""
+        """Get the multiprocessing result queue."""
         return self._result_queue
-
-    @property
-    def save_data(self) -> dict[str, bool | list[str]]:
-        """Get the save data dictionary."""
-        return self._save_data
 
     def __init__(
         self,
         node: MimicNode,
-        pre_node_process_args: dict[str, Any],
-        pre_raw_nodes: dict[type[MimicNode], dict[str, Any]],
-        save_data: dict[str, bool | list[str]],
+        node_process_args: dict[str, Any],
+        raw_nodes: Optional[dict[MimicNode, dict[str, Any]]] = None,
     ):
-        self._save_data: dict[str, bool | list[str]] = save_data
+        """
+        Initialize the NodeExecutor.
+
+        Args:
+            node: The MimicNode instance to execute.
+            node_process_args: Arguments to pass to node.process().
+            raw_nodes: Optional dict mapping MimicNode instances to their init_args.
+                       These will be reconstructed in the child process and added to node_process_args.
+        """
         self._node: MimicNode = node
-        self._node_process_args: dict[str, Any] = {}
-        for key, value in pre_node_process_args.items():
-            # move tensors to CPU so they can be pickled
-            if isinstance(value, Tensor):
-                self._node_process_args[key] = value.cpu()
-            else:
-                self._node_process_args[key] = value
-        self._result_queue: mlp.Queue = p_logger.get_mp_context().Queue()
+        self._node_process_args: dict[str, Any] = node_process_args
+        self._raw_nodes: dict[MimicNode, dict[str, Any]] = raw_nodes or {}
+
+        # Use spawn context from p_logger to avoid CUDA fork issues
+        mp_context = p_logger.get_mp_context()
+        self._result_queue: mlp.Queue = mp_context.Queue()
         self._log_queue: mlp.Queue = p_logger.get_log_queue()
-        self._raw_nodes: dict[str, tuple[type[MimicNode], dict[str, Any]]] = {
-            t.key(): (t, args) for t, args in pre_raw_nodes.items()
-        }
+        self._mp_context = mp_context
         self._process: Optional[mlp.Process] = None
 
-    def execute(
-        self,
-        save_call: Callable[[dict[str, bool | list[str]], Tensor, str], None],
-        timeout: Optional[float] = None,
-        poll_interval: float = 0.1,
-    ) -> Any:
+    def _serialize_for_child(self) -> tuple[
+        type[MimicNode],
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, tuple[type[MimicNode], dict[str, Any]]],
+    ]:
+        """
+        Serialize all data needed by the child process.
+
+        Returns pickleable data only: classes and dicts, not instances with callbacks.
+        """
+        # Get the class and init_args from the main node
+        node_cls = self._node.__class__
+        node_init_args = dict(self._node.init_args.get("kwargs", {}))
+
+        # Filter node_process_args to only include pickleable items
+        # (exclude MimicNode instances - they'll be in raw_nodes)
+        node_exec_args = {}
+        for key, value in self._node_process_args.items():
+            if not isinstance(value, MimicNode):
+                node_exec_args[key] = value
+
+        # Serialize raw_nodes: key -> (class, init_args)
+        raw_nodes_serialized: dict[str, tuple[type[MimicNode], dict[str, Any]]] = {}
+        for node_inst, init_args in self._raw_nodes.items():
+            raw_nodes_serialized[node_inst.key()] = (node_inst.__class__, init_args)
+
+        return node_cls, node_init_args, node_exec_args, raw_nodes_serialized
+
+    def execute(self, timeout: Optional[float] = None, poll_interval: float = 0.1) -> Any:
         """
         Execute the node in a child process and return the result.
 
@@ -383,23 +355,27 @@ class NodeExecutor:
             Exception: If the child process raised an exception.
             TimeoutError: If timeout is reached.
         """
-        worker_target = partial(
-            _node_executor_target,
-            self._node.__class__,
-            self._node.init_args,
-            self._node_process_args,
-            self._raw_nodes,
-            save_call,
-            self._save_data,
-        )
-        self._process = p_logger.get_mp_context().Process(
+        node_cls, node_init_args, node_exec_args, raw_nodes_serialized = self._serialize_for_child()
+
+        # Create a queue to pass arguments to the child (since we can't use lambdas with spawn)
+        args_queue: mlp.Queue = self._mp_context.Queue()
+        args_queue.put((node_cls, node_init_args, node_exec_args, raw_nodes_serialized, self._result_queue))
+
+        # Create the child process using spawn context
+        self._process = self._mp_context.Process(
             target=c_logger.worker_wrapper,
-            name=f"MimicNodeExecutor-{self._node.__class__.__name__}",
-            args=(worker_target, self._log_queue, self._result_queue),
+            args=(
+                _worker_target,
+                self._log_queue,
+                args_queue,
+            ),
         )
+
         self._process.start()
 
         # Poll log queue while waiting for result
+        import time
+
         start_time = time.time()
 
         while self._process.is_alive():
@@ -419,38 +395,86 @@ class NodeExecutor:
 
         # Get result from queue
         if self._result_queue.empty():
-            logging.error("No result returned from child process for %s", self._node.__class__.__name__)
             raise RuntimeError("Child process ended without returning a result")
 
-        status, s_data, result = self._result_queue.get()
-
-        self._save_data.update(s_data)
+        status, result = self._result_queue.get()
 
         if status == "error":
-            logging.error("Child process raised an exception for %s", self._node.__class__.__name__)
-            raise result
-
-        logging.info("Node %s executed successfully in child process", self._node.__class__.__name__)
-
-        if isinstance(result, Tensor) and torch.cuda.is_available():
             raise result
 
         return result
 
-    @classmethod
-    def _executable(
-        cls,
-        node: MimicNode,
-        node_exec_args: dict[str, Any],
-        queue: mlp.Queue,
-        raw_nodes: dict[MimicNode, dict[str, Any]],
-    ) -> None:
-        """Executes the node and puts the result in the queue."""
-        try:
-            for t, args in raw_nodes.items():
-                node_exec_args[t.key()] = t(**args)
-            output = node.process(**node_exec_args)
-            queue.put(output)
-        except Exception as e:
-            logging.exception("Error executing %s", node.__class__.key())
-            queue.put(e)
+    def execute_async(self) -> "NodeExecutor":
+        """
+        Start the node execution in a child process without waiting.
+
+        Use poll() to check for completion and get_result() to retrieve the result.
+
+        Returns:
+            self, for method chaining.
+        """
+        node_cls, node_init_args, node_exec_args, raw_nodes_serialized = self._serialize_for_child()
+
+        # Create a queue to pass arguments to the child
+        args_queue: mlp.Queue = self._mp_context.Queue()
+        args_queue.put((node_cls, node_init_args, node_exec_args, raw_nodes_serialized, self._result_queue))
+
+        self._process = self._mp_context.Process(
+            target=c_logger.worker_wrapper,
+            args=(
+                _worker_target,
+                self._log_queue,
+                args_queue,
+            ),
+        )
+
+        self._process.start()
+        return self
+
+    def poll(self) -> bool:
+        """
+        Poll logs from child and check if execution is complete.
+
+        Returns:
+            True if execution is complete, False if still running.
+        """
+        p_logger.poll_log_queue()
+        return self._process is not None and not self._process.is_alive()
+
+    def get_result(self) -> Any:
+        """
+        Get the result after execution is complete.
+
+        Call poll() first to ensure execution is complete.
+
+        Returns:
+            The output from node.process().
+
+        Raises:
+            Exception: If the child process raised an exception.
+            RuntimeError: If no result is available.
+        """
+        if self._process is None:
+            raise RuntimeError("No process has been started")
+
+        if self._process.is_alive():
+            raise RuntimeError("Process is still running")
+
+        # Drain remaining logs
+        p_logger.poll_log_queue()
+
+        if self._result_queue.empty():
+            raise RuntimeError("Child process ended without returning a result")
+
+        status, result = self._result_queue.get()
+
+        if status == "error":
+            raise result
+
+        return result
+
+    def terminate(self) -> None:
+        """Terminate the child process if running."""
+        if self._process is not None and self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=5)

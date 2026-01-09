@@ -8,6 +8,7 @@ from comfy.sd import load_clip, CLIP
 import folder_paths
 from json_gui.scripts.controlnet_openpose.model import Model
 from json_gui.utils import AbsFlow
+from json_gui.scripts.mimic import NodeExecutor
 import comfy.model_management
 
 # Paths - User to replace these
@@ -67,17 +68,21 @@ class Flow(AbsFlow):
     def _run_impl(self, steps: int) -> list[str]:
         """Main function to run the ControlNet flow."""
 
-        self.input_model = steps
+        self.input_model: Model = steps
 
-        skip_layers_model = self.input_model.skip_layers_model
+        sd_model = self.input_model.skip_layers_model
+        sd_raw_node: dict[type, dict] = {sd_model.__class__: sd_model.init_args}
 
         # Encode Prompts
-        cond_pos, cond_neg = self.input_model.prompts.get_prompts(self.clip)
+        cond_pos, cond_neg = self.input_model.prompts.process(self.clip)
 
         # Run control net conditionings
         logging.info("Applying ControlNet conditionings...")
         for cnet in self.input_model.apply_control_net:
-            cond_pos, cond_neg = cnet.conditionals(cond_pos, cond_neg, skip_layers_model.vae)
+            el_diccionario_pitudo: dict = cnet.process_args_dict(cond_pos, cond_neg)
+            cond_pos, cond_neg = NodeExecutor(cnet, el_diccionario_pitudo, sd_raw_node, self.saved_data).execute(
+                self.save_call
+            )
 
         latent_image = self.input_model.empty_latent.latent(skip_layers_model.vae)
 

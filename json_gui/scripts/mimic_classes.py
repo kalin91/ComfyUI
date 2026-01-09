@@ -3,7 +3,7 @@
 import inspect
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 import torch
 import numpy as np
 from segment_anything.build_sam import Sam
@@ -24,7 +24,70 @@ from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
 from nodes import ControlNetApplyAdvanced
 import folder_paths
 from PIL import Image
-from json_gui.scripts.mimic import MimicNode, DataWrapper
+from json_gui.scripts.mimic import MimicNode
+
+
+class SkipLayers(MimicNode):
+    """A class representing skip layer guidance settings."""
+
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the SkipLayers."""
+        return "skip_layers_model"
+
+    CHECKPOINT_PATH = "sd3.5_medium.safetensors"
+
+    def get_model(self, use_tuned: bool) -> ModelPatcher:
+        """Returns the model based on whether to use the tuned version."""
+        return self._process_impl(use_tuned)
+
+    # pylint: disable=W0221
+    def _process_impl(self, use_tuned: bool) -> ModelPatcher:
+        """Returns the tuned model."""
+        return self._tunned_model if use_tuned else self._base_model
+
+    @property
+    def vae(self) -> VAE:
+        """Returns the VAE."""
+        return self._vae
+
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, layers: list[int], scale: float, start_percent: float, end_percent: float) -> None:
+        # 1. Load Model and VAE
+        logging.info("Loading Checkpoint...")
+
+        # Free memory before loading the large checkpoint (~10.5GB)
+        comfy.model_management.unload_all_models()
+        comfy.model_management.soft_empty_cache()
+
+        ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", self.CHECKPOINT_PATH)
+        self._base_model, _a, self._vae, _b = load_checkpoint_guess_config(
+            ckpt_path,
+            output_vae=True,
+            output_clip=False,
+            embedding_directory=folder_paths.get_folder_paths("embeddings"),
+        )
+        self._layers = ",".join(str(layer) for layer in layers)
+        self._scale = scale
+        self._start_percent = start_percent
+        self._end_percent = end_percent
+
+        if self._layers:
+            result: tuple = SkipLayerGuidanceSD3.execute(
+                self._base_model,
+                self._layers,
+                self._scale,
+                self._start_percent,
+                self._end_percent,
+            )
+            self._tunned_model = result[0]
+        else:
+            self._tunned_model = self._base_model
+
+    def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
+        super().__init__()
+        self.update(layers=layers, scale=scale, start_percent=start_percent, end_percent=end_percent)
 
 
 class ControlNetImgPreprocessor(MimicNode, ABC):
@@ -315,6 +378,7 @@ class ApplyControlNet(MimicNode):
         """Returns the target ControlNet image preprocessor."""
         return self._target
 
+    @SkipLayers.use_class_param(lambda inst: {"vae": cast(SkipLayers, inst).vae})
     # pylint: disable=W0221
     def _process_impl(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
         """Returns placeholder conditionals."""
@@ -827,68 +891,3 @@ class Rotator(MimicNode):
 
         logging.info("Final cropped image shape: %s", rotated_image.shape)
         return rotated_image
-
-
-class SkipLayers(MimicNode):
-    """A class representing skip layer guidance settings."""
-
-    @classmethod
-    def key(cls) -> str:
-        """Returns the key for the SkipLayers."""
-        return "skip_layers_model"
-
-    CHECKPOINT_PATH = "sd3.5_medium.safetensors"
-
-    def get_model(self, use_tuned: bool) -> ModelPatcher:
-        """Returns the model based on whether to use the tuned version."""
-        return self._process_impl(use_tuned)
-
-    # pylint: disable=W0221
-    def _process_impl(self, use_tuned: bool) -> DataWrapper[ModelPatcher]:
-        """Returns the tuned model."""
-        return self._tunned_model if use_tuned else self._base_model
-
-    @property
-    def vae(self) -> DataWrapper[VAE]:
-        """Returns the VAE."""
-        return self._vae
-
-    # pylint: disable=W0221
-    # pylint: disable=W0201
-    def _update_impl(self, layers: list[int], scale: float, start_percent: float, end_percent: float) -> None:
-        # 1. Load Model and VAE
-        logging.info("Loading Checkpoint...")
-
-        # Free memory before loading the large checkpoint (~10.5GB)
-        comfy.model_management.unload_all_models()
-        comfy.model_management.soft_empty_cache()
-
-        ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", self.CHECKPOINT_PATH)
-        base_model, _a, vae, _b = load_checkpoint_guess_config(
-            ckpt_path,
-            output_vae=True,
-            output_clip=False,
-            embedding_directory=folder_paths.get_folder_paths("embeddings"),
-        )
-        self._layers = ",".join(str(layer) for layer in layers)
-        self._scale = scale
-        self._start_percent = start_percent
-        self._end_percent = end_percent
-        self._vae = DataWrapper(vae)
-        self._base_model = DataWrapper(base_model)
-
-        if self._layers:
-            result: tuple = SkipLayerGuidanceSD3.execute(
-                self._base_model.get(),
-                self._layers,
-                self._scale,
-                self._start_percent,
-                self._end_percent,
-            )
-            self._tunned_model = DataWrapper(result[0])
-        else:
-            self._tunned_model = self._base_model
-
-    def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
-        super().__init__()
-        self.update(layers=layers, scale=scale, start_percent=start_percent, end_percent=end_percent)

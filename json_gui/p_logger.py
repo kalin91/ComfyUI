@@ -1,11 +1,11 @@
 """Logger setup for parent process in JSON GUI module."""
 
 import logging
+from multiprocessing.context import SpawnContext
 from queue import Empty
 from app.logger import setup_logger
 from comfy.cli_args import args
 from torch import multiprocessing as mlp
-
 
 logger = logging.getLogger()
 if logger.hasHandlers():
@@ -14,7 +14,7 @@ if logger.hasHandlers():
 setup_logger(log_level=args.verbose, use_stdout=args.log_stdout)
 
 # Use spawn context to avoid CUDA fork issues
-MP_CONTEXT = mlp.get_context("spawn")
+MP_CONTEXT: SpawnContext = mlp.get_context("spawn")
 
 # Global queue for child process logging (must use spawn context)
 LOG_QUEUE: mlp.Queue = MP_CONTEXT.Queue()
@@ -44,6 +44,6 @@ def get_log_queue() -> mlp.Queue:
     return LOG_QUEUE
 
 
-def get_mp_context() -> mlp.SpawnContext:
+def get_mp_context() -> SpawnContext:
     """Get the spawn multiprocessing context."""
     return MP_CONTEXT
