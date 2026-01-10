@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional, cast
 
 import torch
 from json_gui.scripts.mimic_classes import (
+    Sd3Clip,
     ControlNetImgPreprocessor,
     OpenPosePose,
     CannyEdge,
@@ -30,6 +31,11 @@ class Model:
         """Sets the save image callback."""
         assert value is not None, "Save call cannot be None."
         self._save_call = value
+
+    @property
+    def clip(self) -> Sd3Clip:
+        """Returns the loaded CLIP model."""
+        return self._clip
 
     @property
     def prompts(self) -> Prompts:
@@ -76,6 +82,7 @@ class Model:
             assert os.path.exists(filepath), f"Flow file {filepath} does not exist."
             logging.info("Loading flow from %s", filepath)
         self._file_path: str = self.__class__.file_path
+        self._clip: Sd3Clip = Sd3Clip()
         self.load_json()
 
     def load_json(self) -> None:

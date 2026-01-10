@@ -8,13 +8,8 @@ from comfy.sd import load_clip, CLIP
 import folder_paths
 from json_gui.scripts.controlnet_openpose.model import Model
 from json_gui.utils import AbsFlow
-from json_gui.scripts.mimic import NodeExecutor
+from json_gui.scripts.mimic import NodeExecutor, prepare_for_serialization
 import comfy.model_management
-
-# Paths - User to replace these
-CLIP_G_PATH = "sd35m/clip_g.safetensors"
-CLIP_L_PATH = "sd35m/clip_l.safetensors"
-T5_PATH = "sd35m/t5xxl_fp16.safetensors"
 
 
 class Flow(AbsFlow):
@@ -49,39 +44,36 @@ class Flow(AbsFlow):
 
     def __init__(self, file_path: str, filename: str) -> None:
         super().__init__(file_path, filename)
-
-        # Load Triple CLIP
-        logging.info("Loading CLIPs...")
-        clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_G_PATH)
-        clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", CLIP_L_PATH)
-        clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", T5_PATH)
-
-        clip: CLIP = load_clip(
-            ckpt_paths=[clip_path1, clip_path2, clip_path3],
-            embedding_directory=folder_paths.get_folder_paths("embeddings"),
-        )
-
-        self._clip = clip
         self._input_model: Model = Model(self.json_path)
+        sd_clip = self._input_model.clip
+        self._clip: CLIP = NodeExecutor(
+            sd_clip, sd_clip.init_args, {}, self.saved_data
+        ).execute()
+        logging.info("Loaded CLIP model for flow.")
 
     def _run_impl(self, steps: int) -> list[str]:
         """Main function to run the ControlNet flow."""
 
         self.input_model: Model = steps
+        raw_nodes: dict[type, dict] = {}
 
         sd_model = self.input_model.skip_layers_model
-        sd_raw_node: dict[type, dict] = {sd_model.__class__: sd_model.init_args}
+        raw_nodes.update({sd_model.__class__: sd_model.init_args})
+
+        prms_node = self.input_model.prompts
+        raw_nodes.update({prms_node.__class__: prms_node.init_args})
 
         # Encode Prompts
-        cond_pos, cond_neg = self.input_model.prompts.process(self.clip)
+        other_clip = prepare_for_serialization(self.clip)
+        cond_pos, cond_neg = NodeExecutor(
+            prms_node, prms_node.process_args_dict(other_clip), {}, self.saved_data
+        ).execute(self.save_call)
 
         # Run control net conditionings
         logging.info("Applying ControlNet conditionings...")
         for cnet in self.input_model.apply_control_net:
             dict_arg: dict = cnet.process_args_dict(cond_pos, cond_neg)
-            cond_pos, cond_neg = NodeExecutor(cnet, dict_arg, sd_raw_node, self.saved_data).execute(
-                self.save_call
-            )
+            cond_pos, cond_neg = NodeExecutor(cnet, dict_arg, sd_raw_node, self.saved_data).execute(self.save_call)
 
         latent_image = self.input_model.empty_latent.latent(skip_layers_model.vae)
 

@@ -7,6 +7,7 @@ from functools import wraps, partial
 from typing import Any, Callable, Optional, Type, TypeVar, Generic
 from abc import ABC, abstractmethod
 import os
+import signal
 import pickle
 import inspect
 import numpy as np
@@ -290,15 +291,15 @@ class MimicNode(ABC, Generic[T]):
 def _is_unserializable_callable(obj: Any) -> bool:
     """
     Check if obj is a callable that cannot be pickled.
-    
+
     Lambdas, local functions, and closures typically cannot be pickled
     because they reference local scope that pickle cannot capture.
     """
     import types
-    
+
     if not callable(obj):
         return False
-    
+
     # Check if it's a lambda (name is '<lambda>')
     if isinstance(obj, types.FunctionType):
         if obj.__name__ == "<lambda>":
@@ -306,19 +307,19 @@ def _is_unserializable_callable(obj: Any) -> bool:
         # Check if it's a local/nested function (has '<locals>' in qualname)
         if obj.__qualname__ and "<locals>" in obj.__qualname__:
             return True
-    
+
     # Check for bound methods with unserializable functions
     if isinstance(obj, types.MethodType):
         return _is_unserializable_callable(obj.__func__)
-    
+
     # partial objects wrapping unserializable functions
     if isinstance(obj, partial):
         return _is_unserializable_callable(obj.func)
-    
+
     return False
 
 
-def _prepare_for_serialization(obj: Any, memo: dict[int, Any] | None = None) -> Any:
+def prepare_for_serialization(obj: T, memo: dict[int, Any] | None = None) -> T:
     """
     Recursively prepares objects for pickle serialization.
 
@@ -342,30 +343,30 @@ def _prepare_for_serialization(obj: Any, memo: dict[int, Any] | None = None) -> 
         # contiguous() ensures memory layout is standard for pickle
         res = obj.detach().cpu().clone().contiguous()
         # res.share_memory_()
-        memo[obj_id] = res,
+        memo[obj_id] = (res,)
         return res
     if isinstance(obj, dict):
         res = {}
         memo[obj_id] = res
         for k, v in obj.items():
-            res[k] = _prepare_for_serialization(v, memo)
+            res[k] = prepare_for_serialization(v, memo)
         return res
     if isinstance(obj, list):
         res = []
         memo[obj_id] = res
         for x in obj:
-            res.append(_prepare_for_serialization(x, memo))
+            res.append(prepare_for_serialization(x, memo))
         return res
     if isinstance(obj, (tuple, set)):
         cls = type(obj)
-        res = cls(_prepare_for_serialization(x, memo) for x in obj)
+        res = cls(prepare_for_serialization(x, memo) for x in obj)
         memo[obj_id] = res
         return res
     if hasattr(obj, "__dict__") and not isinstance(obj, type):
         # For custom objects, recursively process their attributes
         memo[obj_id] = obj
         for k, v in list(obj.__dict__.items()):
-            setattr(obj, k, _prepare_for_serialization(v, memo))
+            setattr(obj, k, prepare_for_serialization(v, memo))
         return obj
     memo[obj_id] = obj
     return obj
@@ -376,7 +377,7 @@ def _node_executor_target(
     node_init_args: dict[str, Any],
     node_exec_args: dict[str, Any],
     raw_nodes_serialized: dict[str, tuple[type[MimicNode], dict[str, Any]]],
-    save_call: Callable[[dict[str, bool | list[str]], Tensor, str], None],
+    save_call: Optional[Callable[[dict[str, bool | list[str]], Tensor, str], None]],
     save_data: dict[str, bool | list[str]],
     result_queue: mlp.Queue,
 ) -> None:
@@ -406,7 +407,7 @@ def _node_executor_target(
         output = node.process(**node_exec_args)
 
         # Prepare tensors for serialization: move to CPU, detach from graph, clone
-        output = _prepare_for_serialization(output)
+        output = prepare_for_serialization(output)
 
         logging.info("Putting result in queue... Output type: %s", type(output))
 
@@ -414,7 +415,8 @@ def _node_executor_target(
         # that swallows pickle errors silently)
         result_tuple = ("success", save_data, output)
         try:
-            pickle.dumps(result_tuple)  # Test serialization
+            dumped_data = pickle.dumps(result_tuple)  # Test serialization
+            logging.info("Result serialization test successful, size: %d kb", len(dumped_data) // 1024)
         except Exception as pickle_err:
             logging.exception("Failed to serialize result: %s", pickle_err)
             result_queue.put(("error", save_data, RuntimeError(f"Serialization failed: {pickle_err}")))
@@ -422,6 +424,7 @@ def _node_executor_target(
 
         result_queue.put(result_tuple)
         logging.info("Result successfully put in queue.")
+        signal.pause()
     except Exception as e:
         logging.exception("Error executing %s in child process", node_cls.__name__)
         result_queue.put(("error", save_data, e))
@@ -482,7 +485,7 @@ class NodeExecutor:
 
     def execute(
         self,
-        save_call: Callable[[dict[str, bool | list[str]], Tensor, str], None],
+        save_call: Optional[Callable[[dict[str, bool | list[str]], Tensor, str], None]] = None,
         timeout: Optional[float] = None,
         poll_interval: float = 0.05,
     ) -> Any:
@@ -536,7 +539,7 @@ class NodeExecutor:
         # Poll log queue while waiting for result
         start_time = time.time()
 
-        while self._process.is_alive():
+        while self._process.is_alive() and self._result_queue.empty():
             # Poll logs from child
             p_logger.poll_log_queue()
 
@@ -557,6 +560,10 @@ class NodeExecutor:
             raise RuntimeError("Child process ended without returning a result")
 
         status, s_data, result = self._result_queue.get()
+
+        logging.info("ending child process for %s", self._node.__class__.__name__)
+        self._process.terminate()
+        self._process.join(timeout=5)
 
         self._save_data.update(s_data)
 

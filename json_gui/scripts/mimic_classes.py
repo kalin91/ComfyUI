@@ -3,7 +3,7 @@
 import inspect
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional, Tuple, cast, Type
+from typing import Any, Callable, Optional, Tuple, Union, cast, Type
 import torch
 import numpy as np
 from segment_anything.build_sam import Sam
@@ -12,7 +12,7 @@ from comfy_extras.nodes_sd3 import SkipLayerGuidanceSD3
 from comfy_extras.nodes_images import ResizeAndPadImage
 from comfy_extras.nodes_mask import MaskToImage
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
-from comfy.sd import load_checkpoint_guess_config, VAE, CLIP
+from comfy.sd import load_checkpoint_guess_config, VAE, CLIP, load_clip
 from comfy.model_patcher import ModelPatcher
 from comfy.controlnet import load_controlnet
 from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
@@ -25,6 +25,41 @@ from nodes import ControlNetApplyAdvanced
 import folder_paths
 from PIL import Image
 from json_gui.scripts.mimic import MimicNode
+
+
+class Sd3Clip(MimicNode):
+    """A class representing SD3 CLIP settings."""
+
+    CLIP_G_PATH = "sd35m/clip_g.safetensors"
+    CLIP_L_PATH = "sd35m/clip_l.safetensors"
+    T5_PATH = "sd35m/t5xxl_fp16.safetensors"
+
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the Sd3Clip."""
+        return "sd3_clip"
+
+    # pylint: disable=W0201
+    # pylint: disable=W0221
+    def _process_impl(self) -> CLIP:
+        """Loads the Triple CLIP model."""
+        logging.info("Loading CLIPs...")
+        clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", self.CLIP_G_PATH)
+        clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", self.CLIP_L_PATH)
+        clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", self.T5_PATH)
+        return load_clip(
+            ckpt_paths=[clip_path1, clip_path2, clip_path3],
+            embedding_directory=folder_paths.get_folder_paths("embeddings"),
+        )
+
+    # pylint: disable=W0221
+    def _update_impl(self) -> None:
+        """PASS - Loads the CLIP model."""
+        self._clip = None
+
+    def __init__(self):
+        super().__init__()
+        self.update()
 
 
 class SkipLayers(MimicNode):
@@ -255,12 +290,12 @@ class Prompts(MimicNode):
         return "prompts"
 
     @property
-    def positive(self) -> str:
+    def positive(self) -> Union[str, list[tuple[torch.Tensor, dict[str, Any]]]]:
         """Returns the positive prompt."""
         return self._positive
 
     @property
-    def negative(self) -> str:
+    def negative(self) -> Union[str, list[tuple[torch.Tensor, dict[str, Any]]]]:
         """Returns the negative prompt."""
         return self._negative
 
@@ -269,25 +304,36 @@ class Prompts(MimicNode):
         self, clip: CLIP
     ) -> tuple[list[tuple[torch.Tensor, dict[str, Any]]], list[tuple[torch.Tensor, dict[str, Any]]]]:
         """Encodes the positive and negative prompts using the provided CLIP model."""
-        logging.info("Encoding prompts...")
-        tokens_pos = clip.tokenize(self.positive)
-        cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
+        assert type(self.positive) is type(self.negative), "Positive and Negative prompts must be of the same type"
+        if isinstance(self.positive, str):
+            logging.info("Encoding prompts...")
+            tokens_pos = clip.tokenize(self.positive)
+            cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
 
-        tokens_neg = clip.tokenize(self.negative)
-        cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
+            tokens_neg = clip.tokenize(self.negative)
+            cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
 
-        del tokens_pos
-        del tokens_neg
-        torch.cuda.empty_cache()
-        return (cond_pos, cond_neg)
+            del tokens_pos
+            del tokens_neg
+            torch.cuda.empty_cache()
+            return (cond_pos, cond_neg)
+        return (self.positive, self.negative)
 
     # pylint: disable=W0221
     # pylint: disable=W0201
-    def _update_impl(self, positive: str, negative: str) -> None:
+    def _update_impl(
+        self,
+        positive: Union[str, list[tuple[torch.Tensor, dict[str, Any]]]],
+        negative: Union[str, list[tuple[torch.Tensor, dict[str, Any]]]],
+    ) -> None:
         self._positive = positive
         self._negative = negative
 
-    def __init__(self, positive: str, negative: str):
+    def __init__(
+        self,
+        positive: Union[str, list[tuple[torch.Tensor, dict[str, Any]]]],
+        negative: Union[str, list[tuple[torch.Tensor, dict[str, Any]]]],
+    ):
         super().__init__()
         self.update(positive=positive, negative=negative)
 
@@ -375,12 +421,17 @@ class ApplyControlNet(MimicNode):
         """Returns the target ControlNet image preprocessor."""
         return self._target
 
+    @Prompts.use_class_param(
+        lambda inst: {"cond_pos": cast(Prompts, inst).positive, "cond_neg": cast(Prompts, inst).negative}
+    )
     @SkipLayers.use_class_param(lambda inst: {"vae": cast(SkipLayers, inst).vae})
     # pylint: disable=W0221
     def _process_impl(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
         """Returns placeholder conditionals."""
 
         image_tensor: torch.Tensor = self._target.tensor()
+
+        self._save_tensor(image_tensor, self.target.key())
 
         logging.info("Loading ControlNet...")
         controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self._target.controlnet_path)
@@ -400,9 +451,7 @@ class ApplyControlNet(MimicNode):
         # Note: Don't delete controlnet here - it's copied into conds and
         # will be managed by ComfyUI's memory system via load_models_gpu()
         del image_tensor
-        # temporarily remove 'control' key to reduce memory usage
-        for obj in res:
-            del obj[0][1]["control"]
+
         comfy.model_management.soft_empty_cache()
 
         return res
