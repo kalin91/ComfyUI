@@ -400,6 +400,9 @@ class ApplyControlNet(MimicNode):
         # Note: Don't delete controlnet here - it's copied into conds and
         # will be managed by ComfyUI's memory system via load_models_gpu()
         del image_tensor
+        # temporarily remove 'control' key to reduce memory usage
+        for obj in res:
+            del obj[0][1]["control"]
         comfy.model_management.soft_empty_cache()
 
         return res

@@ -7,6 +7,7 @@ from functools import wraps, partial
 from typing import Any, Callable, Optional, Type, TypeVar, Generic
 from abc import ABC, abstractmethod
 import os
+import pickle
 import inspect
 import numpy as np
 import torch
@@ -112,9 +113,11 @@ class MimicNode(ABC, Generic[T]):
                 additional_params: dict[str, Any] = processor(node)
                 kwargs.update(additional_params)
                 return func(*args, **kwargs)
-            
+
             # Register the parameter on the wrapper so _feed_function knows it's allowed
-            wrapper._mimic_extra_params = getattr(func, "_mimic_extra_params", set()) | {param}
+            wrapper._mimic_extra_params = getattr(func, "_mimic_extra_params", set()) | {  # pylint: disable=W0212
+                param
+            }
 
             return wrapper
 
@@ -284,6 +287,90 @@ class MimicNode(ABC, Generic[T]):
         return not cache_invalid
 
 
+def _is_unserializable_callable(obj: Any) -> bool:
+    """
+    Check if obj is a callable that cannot be pickled.
+    
+    Lambdas, local functions, and closures typically cannot be pickled
+    because they reference local scope that pickle cannot capture.
+    """
+    import types
+    
+    if not callable(obj):
+        return False
+    
+    # Check if it's a lambda (name is '<lambda>')
+    if isinstance(obj, types.FunctionType):
+        if obj.__name__ == "<lambda>":
+            return True
+        # Check if it's a local/nested function (has '<locals>' in qualname)
+        if obj.__qualname__ and "<locals>" in obj.__qualname__:
+            return True
+    
+    # Check for bound methods with unserializable functions
+    if isinstance(obj, types.MethodType):
+        return _is_unserializable_callable(obj.__func__)
+    
+    # partial objects wrapping unserializable functions
+    if isinstance(obj, partial):
+        return _is_unserializable_callable(obj.func)
+    
+    return False
+
+
+def _prepare_for_serialization(obj: Any, memo: dict[int, Any] | None = None) -> Any:
+    """
+    Recursively prepares objects for pickle serialization.
+
+    - Moves tensors to CPU, detaches from computation graph, and clones
+    - Replaces unserializable callables (lambdas, local functions) with None
+    """
+    if memo is None:
+        memo = {}
+
+    obj_id = id(obj)
+    if obj_id in memo:
+        return memo[obj_id]
+
+    # Handle unserializable callables first (lambdas, local functions, etc.)
+    if _is_unserializable_callable(obj):
+        memo[obj_id] = None
+        return None
+
+    if isinstance(obj, torch.Tensor):
+        # detach() removes from computation graph, clone() creates independent memory,
+        # contiguous() ensures memory layout is standard for pickle
+        res = obj.detach().cpu().clone().contiguous()
+        # res.share_memory_()
+        memo[obj_id] = res,
+        return res
+    if isinstance(obj, dict):
+        res = {}
+        memo[obj_id] = res
+        for k, v in obj.items():
+            res[k] = _prepare_for_serialization(v, memo)
+        return res
+    if isinstance(obj, list):
+        res = []
+        memo[obj_id] = res
+        for x in obj:
+            res.append(_prepare_for_serialization(x, memo))
+        return res
+    if isinstance(obj, (tuple, set)):
+        cls = type(obj)
+        res = cls(_prepare_for_serialization(x, memo) for x in obj)
+        memo[obj_id] = res
+        return res
+    if hasattr(obj, "__dict__") and not isinstance(obj, type):
+        # For custom objects, recursively process their attributes
+        memo[obj_id] = obj
+        for k, v in list(obj.__dict__.items()):
+            setattr(obj, k, _prepare_for_serialization(v, memo))
+        return obj
+    memo[obj_id] = obj
+    return obj
+
+
 def _node_executor_target(
     node_cls: type[MimicNode],
     node_init_args: dict[str, Any],
@@ -317,7 +404,24 @@ def _node_executor_target(
 
         # Execute the node
         output = node.process(**node_exec_args)
-        result_queue.put(("success", save_data, output))
+
+        # Prepare tensors for serialization: move to CPU, detach from graph, clone
+        output = _prepare_for_serialization(output)
+
+        logging.info("Putting result in queue... Output type: %s", type(output))
+
+        # Validate serialization before putting in queue (queue.put uses background thread
+        # that swallows pickle errors silently)
+        result_tuple = ("success", save_data, output)
+        try:
+            pickle.dumps(result_tuple)  # Test serialization
+        except Exception as pickle_err:
+            logging.exception("Failed to serialize result: %s", pickle_err)
+            result_queue.put(("error", save_data, RuntimeError(f"Serialization failed: {pickle_err}")))
+            return
+
+        result_queue.put(result_tuple)
+        logging.info("Result successfully put in queue.")
     except Exception as e:
         logging.exception("Error executing %s in child process", node_cls.__name__)
         result_queue.put(("error", save_data, e))
