@@ -3,7 +3,7 @@
 import inspect
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional, cast
+from typing import Any, Callable, Optional, Tuple, cast, Type
 import torch
 import numpy as np
 from segment_anything.build_sam import Sam
@@ -93,13 +93,6 @@ class SkipLayers(MimicNode):
 class ControlNetImgPreprocessor(MimicNode, ABC):
     """Abstract base class for ControlNet image preprocessors."""
 
-    def __new__(cls, image_name: str, skip: bool, **kwargs) -> "ControlNetImgPreprocessor":
-        if skip:
-            logging.info("Skipping ControlNet image preprocessor for %s", image_name)
-            return None  # type: ignore
-        instance = super(ControlNetImgPreprocessor, cls).__new__(cls)
-        return instance
-
     @property
     @abstractmethod
     def controlnet_path(self) -> str:
@@ -109,6 +102,10 @@ class ControlNetImgPreprocessor(MimicNode, ABC):
     def skip(self) -> bool:
         """Returns whether to skip this preprocessor."""
         return self._skip
+
+    def tensor(self) -> Any:
+        """Returns the processed tensor."""
+        return self.process()
 
     # pylint: disable=W0221
     def _process_impl(self) -> Any:
@@ -410,15 +407,25 @@ class ApplyControlNet(MimicNode):
     # pylint: disable=W0221
     # pylint: disable=W0201
     def _update_impl(
-        self, strength: float, start_percentage: float, end_percentage: float, target: ControlNetImgPreprocessor
+        self,
+        strength: float,
+        start_percentage: float,
+        end_percentage: float,
+        target: Tuple[Type[ControlNetImgPreprocessor], dict[str, Any]],
     ) -> None:
+        target_cls, target_args = target
+        assert "skip" in target_args, "target_args must include 'skip' key"
         self._strength = strength
         self._start_percentage = start_percentage
         self._end_percentage = end_percentage
-        self._target = target
+        self._target = target_cls(**target_args) if not target_args.get("skip", False) else None
 
     def __init__(
-        self, strength: float, start_percentage: float, end_percentage: float, target: ControlNetImgPreprocessor
+        self,
+        strength: float,
+        start_percentage: float,
+        end_percentage: float,
+        target: Tuple[Type[ControlNetImgPreprocessor], dict[str, Any]],
     ):
         super().__init__()
         self.update(

@@ -112,6 +112,9 @@ class MimicNode(ABC, Generic[T]):
                 additional_params: dict[str, Any] = processor(node)
                 kwargs.update(additional_params)
                 return func(*args, **kwargs)
+            
+            # Register the parameter on the wrapper so _feed_function knows it's allowed
+            wrapper._mimic_extra_params = getattr(func, "_mimic_extra_params", set()) | {param}
 
             return wrapper
 
@@ -148,7 +151,9 @@ class MimicNode(ABC, Generic[T]):
             return func(*args, **kwargs)
         logging.debug("Feeding function %s with args: %s and kwargs: %s", func.__name__, args, list(kwargs.keys()))
         sig = inspect.signature(func)
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        # Allow parameters explicitly requested by decorators
+        extra_params = getattr(func, "_mimic_extra_params", set())
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters or k in extra_params}
         return func(*args, **filtered_kwargs)
 
     @property
@@ -181,6 +186,11 @@ class MimicNode(ABC, Generic[T]):
         """Sets the function to save the tensor."""
         assert callable(value), "save_tensor must be a callable function."
         self._save_tensor = value
+
+    @save_tensor.deleter
+    def save_tensor(self) -> None:
+        """Deletes the save tensor function."""
+        self._save_tensor = None
 
     def __init__(self):
         self._save_tensor: Optional[Callable[[Tensor, str], None]] = None
@@ -302,7 +312,8 @@ def _node_executor_target(
 
         # Reconstruct raw_nodes and add them to exec_args
         for key, (cls, init_args) in raw_nodes_serialized.items():
-            node_exec_args[key] = cls(**init_args)
+            assert "args" in init_args and "kwargs" in init_args, "init_args must contain 'args' and 'kwargs' keys"
+            node_exec_args[key] = cls(*init_args["args"], **init_args["kwargs"])
 
         # Execute the node
         output = node.process(**node_exec_args)
@@ -354,6 +365,8 @@ class NodeExecutor:
             # move tensors to CPU so they can be pickled
             if isinstance(value, Tensor):
                 self._node_process_args[key] = value.cpu()
+            if isinstance(value, MimicNode):
+                del value.save_tensor
             else:
                 self._node_process_args[key] = value
         self._result_queue: mlp.Queue = p_logger.get_mp_context().Queue()
@@ -367,7 +380,7 @@ class NodeExecutor:
         self,
         save_call: Callable[[dict[str, bool | list[str]], Tensor, str], None],
         timeout: Optional[float] = None,
-        poll_interval: float = 0.1,
+        poll_interval: float = 0.05,
     ) -> Any:
         """
         Execute the node in a child process and return the result.
@@ -383,6 +396,23 @@ class NodeExecutor:
             Exception: If the child process raised an exception.
             TimeoutError: If timeout is reached.
         """
+        raw_init_args = self._node.init_args
+        init_args = {"args": [], "kwargs": {}}
+        for val in raw_init_args["args"]:
+            if isinstance(val, Tensor):
+                init_args["args"].append(val.cpu())
+            elif isinstance(val, MimicNode):
+                del val.save_tensor
+            else:
+                init_args["args"].append(val)
+        for key, val in raw_init_args["kwargs"].items():
+            if isinstance(val, Tensor):
+                init_args["kwargs"][key] = val.cpu()
+            elif isinstance(val, MimicNode):
+                del val.save_tensor
+            else:
+                init_args["kwargs"][key] = val
+
         worker_target = partial(
             _node_executor_target,
             self._node.__class__,

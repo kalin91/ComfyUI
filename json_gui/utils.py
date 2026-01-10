@@ -144,9 +144,6 @@ class AbsFlow(ABC):
 
     def __init__(self, file_path: str, filename: str) -> None:
         """Initializes the AbsFlow instance."""
-        self._save_image: Optional[Callable[[dict[bool | list[str]], torch.Tensor, str, bool], tuple[bool | dict]]] = (
-            None
-        )
         self._saved_data: dict = {"last_saved_to_temp": None, "created_images": []}
         self._file_path = file_path
         self._json_path = os.path.join(get_main_images_path(), file_path, f"{filename}.json")
@@ -163,6 +160,10 @@ class AbsFlow(ABC):
             if indexes:
                 idx = max(indexes) + 1
         self._file_identifier = f"{filename}_r{idx}"
+
+        self._save_image: Optional[Callable[[dict[bool | list[str]], torch.Tensor, str, bool], tuple[bool | dict]]] = (
+            partial(save_image, steps=1, file_identifier=self._file_identifier)
+        )
 
         # delete any output files with this identifier
         for f in files:

@@ -45,7 +45,7 @@ class Flow(AbsFlow):
     @save_call.setter
     def save_call(self, value: int) -> None:
         assert isinstance(value, int), "Save call value must be an integer."
-        self._save_call = lambda i, n, s=value: self.save_image(i, n, s)
+        self._save_call = partial(self.save_image, steps=value)
 
     def __init__(self, file_path: str, filename: str) -> None:
         super().__init__(file_path, filename)
@@ -62,8 +62,7 @@ class Flow(AbsFlow):
         )
 
         self._clip = clip
-        self.save_call = 1  # Default save call
-        self._input_model: Model = Model(self.json_path, self.save_call)
+        self._input_model: Model = Model(self.json_path)
 
     def _run_impl(self, steps: int) -> list[str]:
         """Main function to run the ControlNet flow."""
@@ -79,8 +78,8 @@ class Flow(AbsFlow):
         # Run control net conditionings
         logging.info("Applying ControlNet conditionings...")
         for cnet in self.input_model.apply_control_net:
-            el_diccionario_pitudo: dict = cnet.process_args_dict(cond_pos, cond_neg)
-            cond_pos, cond_neg = NodeExecutor(cnet, el_diccionario_pitudo, sd_raw_node, self.saved_data).execute(
+            dict_arg: dict = cnet.process_args_dict(cond_pos, cond_neg)
+            cond_pos, cond_neg = NodeExecutor(cnet, dict_arg, sd_raw_node, self.saved_data).execute(
                 self.save_call
             )
 
