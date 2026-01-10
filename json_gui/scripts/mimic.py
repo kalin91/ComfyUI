@@ -318,11 +318,55 @@ def _is_unserializable_callable(obj: Any) -> bool:
     return False
 
 
+class _SerializedTensor:
+    """
+    A wrapper to serialize tensors as raw bytes, avoiding PyTorch's file_descriptor sharing.
+    
+    PyTorch's default multiprocessing uses file descriptors to share tensor memory between
+    processes. If the child process terminates before the parent retrieves the data,
+    the file descriptor becomes invalid causing ConnectionRefusedError.
+    
+    This wrapper converts tensors to numpy bytes, which are fully serialized in the pickle
+    stream and don't require the child process to stay alive.
+    """
+    __slots__ = ('data', 'shape', 'dtype')
+    
+    def __init__(self, tensor: torch.Tensor):
+        # Store as numpy bytes - fully serialized, no shared memory
+        t = tensor.detach().cpu().contiguous()
+        self.data = t.numpy().tobytes()
+        self.shape = tuple(t.shape)
+        self.dtype = t.dtype
+    
+    def to_tensor(self) -> torch.Tensor:
+        """Reconstruct the tensor from stored bytes."""
+        # Map torch dtype to numpy dtype for reconstruction
+        dtype_map = {
+            torch.float32: np.float32,
+            torch.float64: np.float64,
+            torch.float16: np.float16,
+            torch.bfloat16: np.float32,  # bfloat16 doesn't exist in numpy, use float32
+            torch.int32: np.int32,
+            torch.int64: np.int64,
+            torch.int16: np.int16,
+            torch.int8: np.int8,
+            torch.uint8: np.uint8,
+            torch.bool: np.bool_,
+        }
+        np_dtype = dtype_map.get(self.dtype, np.float32)
+        arr = np.frombuffer(self.data, dtype=np_dtype).reshape(self.shape)
+        tensor = torch.from_numpy(arr.copy())  # copy to own the memory
+        # Convert back to original dtype if needed (e.g., bfloat16)
+        if tensor.dtype != self.dtype:
+            tensor = tensor.to(self.dtype)
+        return tensor
+
+
 def _prepare_for_serialization(obj: Any, memo: dict[int, Any] | None = None) -> Any:
     """
     Recursively prepares objects for pickle serialization.
 
-    - Moves tensors to CPU, detaches from computation graph, and clones
+    - Converts tensors to _SerializedTensor (avoids file_descriptor sharing issues)
     - Replaces unserializable callables (lambdas, local functions) with None
     """
     if memo is None:
@@ -338,11 +382,9 @@ def _prepare_for_serialization(obj: Any, memo: dict[int, Any] | None = None) -> 
         return None
 
     if isinstance(obj, torch.Tensor):
-        # detach() removes from computation graph, clone() creates independent memory,
-        # contiguous() ensures memory layout is standard for pickle
-        res = obj.detach().cpu().clone().contiguous()
-        # res.share_memory_()
-        memo[obj_id] = res,
+        # Wrap tensor in _SerializedTensor to avoid file_descriptor sharing
+        res = _SerializedTensor(obj)
+        memo[obj_id] = res
         return res
     if isinstance(obj, dict):
         res = {}
@@ -369,6 +411,50 @@ def _prepare_for_serialization(obj: Any, memo: dict[int, Any] | None = None) -> 
         return obj
     memo[obj_id] = obj
     return obj
+
+
+def _restore_tensors(obj: Any, memo: dict[int, Any] | None = None) -> Any:
+    """
+    Recursively restores _SerializedTensor objects back to torch.Tensor.
+    
+    Call this on the result after queue.get() to convert back to real tensors.
+    """
+    if memo is None:
+        memo = {}
+
+    obj_id = id(obj)
+    if obj_id in memo:
+        return memo[obj_id]
+
+    if isinstance(obj, _SerializedTensor):
+        res = obj.to_tensor()
+        memo[obj_id] = res
+        return res
+    elif isinstance(obj, dict):
+        res = {}
+        memo[obj_id] = res
+        for k, v in obj.items():
+            res[k] = _restore_tensors(v, memo)
+        return res
+    elif isinstance(obj, list):
+        res = []
+        memo[obj_id] = res
+        for x in obj:
+            res.append(_restore_tensors(x, memo))
+        return res
+    elif isinstance(obj, (tuple, set)):
+        cls = type(obj)
+        res = cls(_restore_tensors(x, memo) for x in obj)
+        memo[obj_id] = res
+        return res
+    elif hasattr(obj, "__dict__") and not isinstance(obj, type):
+        memo[obj_id] = obj
+        for k, v in list(obj.__dict__.items()):
+            setattr(obj, k, _restore_tensors(v, memo))
+        return obj
+    else:
+        memo[obj_id] = obj
+        return obj
 
 
 def _node_executor_target(
@@ -566,8 +652,8 @@ class NodeExecutor:
 
         logging.info("Node %s executed successfully in child process", self._node.__class__.__name__)
 
-        if isinstance(result, Tensor) and torch.cuda.is_available():
-            raise result
+        # Restore _SerializedTensor objects back to torch.Tensor
+        result = _restore_tensors(result)
 
         return result
 
