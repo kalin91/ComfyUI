@@ -42,27 +42,14 @@ class Flow(AbsFlow):
             embedding_directory=folder_paths.get_folder_paths("embeddings"),
         )
 
-        # 6. Encode Prompts
-        positive_prompt: str = flow.positive
-        negative_prompt: str = flow.negative
-
-        logging.info("Encoding prompts...")
-        tokens_pos = clip.tokenize(positive_prompt)
-        cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
-
-        tokens_neg = clip.tokenize(negative_prompt)
-        cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
-
-        del tokens_pos
-        del tokens_neg
-        torch.cuda.empty_cache()
+        cond_pos, cond_neg = flow.prompts.process(clip)
 
         # Run control net conditionings
         logging.info("Applying ControlNet conditionings...")
         for cnet in flow.apply_control_net:
             cond_pos, cond_neg = cnet.conditionals(cond_pos, cond_neg, skip_layers_model.vae)
 
-        latent_image = flow.empty_latent.latent
+        latent_image = flow.empty_latent.latent(skip_layers_model.vae)
 
         for sampler_idx, current_sampler in enumerate(flow.simple_k_sampler):
             logging.info("Running Sampler %d...", sampler_idx)

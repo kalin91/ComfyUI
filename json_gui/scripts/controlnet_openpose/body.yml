@@ -1,10 +1,14 @@
 props:
-  positive:
-    type: multiline_string
+  prompts:
+    type: object
     isArray: false
-  negative:
-    type: multiline_string
-    isArray: false
+    props:
+      positive:
+        type: multiline_string
+        isArray: false
+      negative:
+        type: multiline_string
+        isArray: false
   openpose_pose:
     type: object
     isArray: false
@@ -121,6 +125,11 @@ props:
         isArray: false
         min: 1
         max: 4096
+      image_name:
+        type: file
+        isArray: false
+        hasNone: true
+        parent: input
   simple_k_sampler:
     type: object
     isArray: true

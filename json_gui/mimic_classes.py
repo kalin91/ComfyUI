@@ -12,7 +12,7 @@ import comfy.model_management
 from comfy_extras.nodes_sd3 import SkipLayerGuidanceSD3
 from comfy_extras.nodes_images import ResizeAndPadImage
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
-from comfy.sd import load_checkpoint_guess_config, VAE
+from comfy.sd import load_checkpoint_guess_config, VAE, CLIP
 from comfy.model_patcher import ModelPatcher
 from comfy.controlnet import load_controlnet
 from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
@@ -213,8 +213,63 @@ class SimpleKSampler:
         return comfy.sample.sample(**sampler_arguments)
 
 
+class Prompts:
+    """A class representing positive and negative prompts."""
+
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the Prompts."""
+        return "prompts"
+
+    def process(
+        self, clip: CLIP
+    ) -> tuple[list[tuple[torch.Tensor, dict[str, Any]]], list[tuple[torch.Tensor, dict[str, Any]]]]:
+        """Encodes the positive and negative prompts using the provided CLIP model."""
+        logging.info("Encoding prompts...")
+        tokens_pos = clip.tokenize(self._positive)
+        cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
+
+        tokens_neg = clip.tokenize(self._negative)
+        cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
+
+        del tokens_pos
+        del tokens_neg
+        torch.cuda.empty_cache()
+        return (cond_pos, cond_neg)
+
+    def __init__(self, positive: str, negative: str):
+        self._positive = positive
+        self._negative = negative
+
+
 class EmptyLatent:
     """An empty latent class for placeholder purposes."""
+
+    def _upload_image(self, image_name: str) -> torch.Tensor:
+        """Uploads an image given its name."""
+        assert image_name, "Image name must be provided for ControlNetImgPreprocessor."
+
+        input_folder = folder_paths.get_input_directory()
+        image_path = os.path.join(input_folder, image_name)
+        img = node_helpers.pillow(Image.open, image_path)
+
+        # Process image to tensor (similar to LoadImage node)
+        output_images = []
+        for i in ImageSequence.Iterator(img):
+            i = node_helpers.pillow(ImageOps.exif_transpose, i)
+            if i.mode == "I":
+                i = i.point(lambda i: i * (1 / 255))
+            image = i.convert("RGB")
+            image = np.array(image).astype(np.float32) / 255.0
+            image = torch.from_numpy(image)[None,]
+            output_images.append(image)
+
+        if len(output_images) > 1:
+            # If multiple frames, stack them? For now assume single image as per workflow
+            img_tensor = torch.cat(output_images, dim=0)
+        else:
+            img_tensor = output_images[0]
+        return img_tensor
 
     @property
     def width(self) -> int:
@@ -227,24 +282,63 @@ class EmptyLatent:
         return self._height
 
     @property
+    def start_img(self) -> Optional[torch.Tensor]:
+        """Returns the starting image tensor, if any."""
+        return self._start_img
+
+    @property
     def batch_size(self) -> int:
         """Returns the batch size of the latent."""
         return self._batch_size
 
-    @property
-    def latent(self) -> torch.Tensor:
+    def latent(self, vae: VAE) -> torch.Tensor:
         """Generates and returns an empty latent tensor."""
-        logging.info("Creating empty latent %sx%s...", self._width, self._height)
+        if self.start_img is not None:
+            logging.info("Creating latent from start image...")
 
+            if vae is None:
+                raise ValueError(
+                    "VAE is required to encode start_img to latent space. "
+                    "Please provide vae parameter when creating EmptyLatent with image_name."
+                )
+
+            # Redim the image  to the expected size
+            start_img = self.start_img
+            current_height, current_width = start_img.shape[1], start_img.shape[2]
+
+            if current_height != self._height or current_width != self._width:
+                logging.info(
+                    "Resizing start image from %sx%s to %sx%s...",
+                    current_width,
+                    current_height,
+                    self._width,
+                    self._height,
+                )
+                # Permute: [B, H, W, C] -> [B, C, H, W] for interpolation
+                start_img = start_img.permute(0, 3, 1, 2)
+                start_img = torch.nn.functional.interpolate(
+                    start_img, size=(self._height, self._width), mode="bilinear", align_corners=False
+                )
+                # Permute back: [B, C, H, W] -> [B, H, W, C]
+                start_img = start_img.permute(0, 2, 3, 1)
+
+            logging.info("Encoding start image to latent space with VAE...")
+            latent = vae.encode(start_img)
+            logging.info("Encoded latent shape: %s", latent.shape)
+
+            return latent
+
+        logging.info("Creating empty latent %sx%s...", self._width, self._height)
         return torch.zeros(
             [self._batch_size, 16, self._height // 8, self._width // 8],
             device=comfy.model_management.intermediate_device(),
         )
 
-    def __init__(self, width: int, height: int, batch_size: int):
+    def __init__(self, width: int, height: int, batch_size: int, image_name: Optional[str]) -> None:
         self._width = width
         self._height = height
         self._batch_size = batch_size
+        self._start_img = self._upload_image(image_name) if image_name and image_name != "<None>" else None
 
 
 class ApplyControlNet:

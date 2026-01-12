@@ -15,6 +15,7 @@ from json_gui.mimic_classes import (
     FaceDetailer,
     Rotator,
     SkipLayers,
+    Prompts,
 )
 
 
@@ -25,14 +26,9 @@ class Model:
     save_call: Optional[Callable[[torch.Tensor, str], None]] = None
 
     @property
-    def positive(self) -> str:
-        """Returns the positive prompt."""
-        return self._positive
-
-    @property
-    def negative(self) -> str:
+    def prompts(self) -> Prompts:
         """Returns the negative prompt."""
-        return self._negative
+        return self._prompts
 
     @property
     def apply_control_net(self) -> list[ApplyControlNet]:
@@ -108,8 +104,7 @@ class Model:
             cnet["target"] = target_inst
             cnet_dicts[target_name] = ApplyControlNet(**cnet)
         self._apply_control_net.extend([v for v in cnet_dicts.values() if v is not None])
-        self._positive = json_props["positive"]
-        self._negative = json_props["negative"]
+        self._prompts = Prompts(**json_props["prompts"])
         self._empty_latent = EmptyLatent(**json_props["empty_latent"])
         self._simple_k_sampler = [SimpleKSampler(**s) for s in json_props["simple_k_sampler"]]
         self._face_detailer = FaceDetailer(**json_props["face_detailer"])

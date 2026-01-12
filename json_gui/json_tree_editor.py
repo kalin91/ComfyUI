@@ -206,7 +206,8 @@ def _create_open_preview_handler(p_combo: ttk.Combobox, p_folder: str, p_frame: 
 
     def _open_preview(folder=p_folder, combo=p_combo, frame=p_frame) -> None:
         """Open a floating preview window for the selected image."""
-        path = os.path.join(folder, combo.get())
+        combo_value = combo.get()
+        path = os.path.join(folder, combo_value) if combo_value and combo_value != "<None>" else ""
         if not path:
             messagebox.showwarning("Preview", "Select a file to preview")
             return
@@ -248,6 +249,8 @@ def _create_file_entry(
             body_prefix = body[key].get("prefix", "")
             files, folder = gui_utils.get_folder_files_recursive(body_parent)
             files = [f"{body_prefix}{f}" for f in files]
+        if body[key].get("hasNone", False):
+            files.insert(0, "<None>")
         combo["values"] = files
         if value in files:
             combo.set(value)
