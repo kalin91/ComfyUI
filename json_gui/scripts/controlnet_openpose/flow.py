@@ -4,21 +4,14 @@ import logging
 from typing import Callable
 from functools import partial
 import torch
-from comfy.sd import load_clip, CLIP
-import folder_paths
 from json_gui.scripts.controlnet_openpose.model import Model
 from json_gui.utils import AbsFlow
-from json_gui.scripts.mimic import NodeExecutor, prepare_for_serialization
+from json_gui.scripts.mimic import NodeExecutor
 import comfy.model_management
 
 
 class Flow(AbsFlow):
     """ControlNet OpenPose Flow implementation."""
-
-    @property
-    def clip(self) -> CLIP:
-        """Get the loaded CLIP model."""
-        return self._clip
 
     @property
     def input_model(self) -> Model:
@@ -45,69 +38,60 @@ class Flow(AbsFlow):
     def __init__(self, file_path: str, filename: str) -> None:
         super().__init__(file_path, filename)
         self._input_model: Model = Model(self.json_path)
-        sd_clip = self._input_model.clip
-        self._clip: CLIP = NodeExecutor(
-            sd_clip, sd_clip.init_args, {}, self.saved_data
-        ).execute()
-        logging.info("Loaded CLIP model for flow.")
 
     def _run_impl(self, steps: int) -> list[str]:
         """Main function to run the ControlNet flow."""
 
         self.input_model: Model = steps
-        raw_nodes: dict[type, dict] = {}
-
-        sd_model = self.input_model.skip_layers_model
-        raw_nodes.update({sd_model.__class__: sd_model.init_args})
 
         prms_node = self.input_model.prompts
-        raw_nodes.update({prms_node.__class__: prms_node.init_args})
-
+        sd_clip = self._input_model.clip
+        clip_raw = {sd_clip.__class__: sd_clip.init_args}
         # Encode Prompts
-        other_clip = prepare_for_serialization(self.clip)
-        cond_pos, cond_neg = NodeExecutor(
-            prms_node, prms_node.process_args_dict(other_clip), {}, self.saved_data
-        ).execute(self.save_call)
+        cond_pos, cond_neg = NodeExecutor(prms_node, {}, clip_raw, self.saved_data).execute(self.save_call)
+
+        sd_model = self.input_model.skip_layers_model
+        model_raw: dict[type, dict] = {sd_model.__class__: sd_model.init_args}
+
+        latent_image: torch.Tensor = NodeExecutor(
+            self.input_model.empty_latent, {}, model_raw, self.saved_data
+        ).execute()
 
         # Run control net conditionings
         logging.info("Applying ControlNet conditionings...")
         for cnet in self.input_model.apply_control_net:
             dict_arg: dict = cnet.process_args_dict(cond_pos, cond_neg)
-            cond_pos, cond_neg = NodeExecutor(cnet, dict_arg, sd_raw_node, self.saved_data).execute(self.save_call)
-
-        latent_image = self.input_model.empty_latent.latent(skip_layers_model.vae)
+            cond_pos, cond_neg = NodeExecutor(cnet, dict_arg, model_raw, self.saved_data).execute(self.save_call)
 
         for sampler_idx, current_sampler in enumerate(self.input_model.simple_k_sampler):
             logging.info("Running Sampler %d...", sampler_idx)
-
-            latent_image = current_sampler.process(
-                latent_image, skip_layers_model.get_model(current_sampler.use_tune), cond_pos, cond_neg
+            dict_arg: dict = current_sampler.process_args_dict(
+                latent_image, **{"cond_pos_cnet": cond_pos, "cond_neg_cnet": cond_neg}
+            )
+            latent_image, images = NodeExecutor(current_sampler, dict_arg, model_raw, self.saved_data).execute(
+                self.save_call
             )
 
-            # Decode
-            logging.info("Decoding...")
-            images = skip_layers_model.vae.get().decode(latent_image.clone())
-            logging.info("VAE Output Shape: %s", images.shape)
+        rotator = self.input_model.rotator
+        rotated, unrotator = NodeExecutor(rotator, rotator.process_args_dict(images), {}, self.saved_data).execute(
+            self.save_call
+        )
 
-            # Ensure BHWC (Batch, Height, Width, Channels)
-            if images.shape[1] == 3:
-                images = images.movedim(1, -1)
-
-            logging.info("Final Image Shape: %s", images.shape)
-
-            self.save_image(images, f"sampler-{sampler_idx}", steps)
+        # full_raw = clip_raw.update(model_raw)
 
         input_dict = {
-            "model": skip_layers_model.get_model(self.input_model.face_detailer.use_tune),
-            "clip": self.clip,
-            "vae": skip_layers_model.vae,
+            "input_image": rotated,
             "positive": cond_pos,
             "negative": cond_neg,
         }
-        face_task = partial(self.input_model.face_detailer.detailer_func, **input_dict)
-        detailed_image: torch.Tensor = self.input_model.rotator.rotate_image(images, face_task)
 
-        self.save_image(detailed_image, "output", steps, False)
+        detailed_image: torch.Tensor = NodeExecutor(
+            self.input_model.face_detailer, input_dict, model_raw, self.saved_data
+        ).execute(self.save_call)
+
+        unrotated = unrotator(detailed_image)
+
+        self.save_call(self.saved_data, unrotated, "unrotated", is_temp=False)
 
         # Cleanup: unload models and free memory after flow execution
         comfy.model_management.unload_all_models()

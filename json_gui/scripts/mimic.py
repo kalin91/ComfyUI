@@ -1,5 +1,6 @@
 """Mimic Parent Class and Utilities."""
 
+import types
 import time
 import logging
 import uuid
@@ -295,7 +296,6 @@ def _is_unserializable_callable(obj: Any) -> bool:
     Lambdas, local functions, and closures typically cannot be pickled
     because they reference local scope that pickle cannot capture.
     """
-    import types
 
     if not callable(obj):
         return False
@@ -413,14 +413,15 @@ def _node_executor_target(
 
         # Validate serialization before putting in queue (queue.put uses background thread
         # that swallows pickle errors silently)
-        result_tuple = ("success", save_data, output)
         try:
-            dumped_data = pickle.dumps(result_tuple)  # Test serialization
+            dumped_data = pickle.dumps(output)  # Test serialization
             logging.info("Result serialization test successful, size: %d kb", len(dumped_data) // 1024)
         except Exception as pickle_err:
             logging.exception("Failed to serialize result: %s", pickle_err)
             result_queue.put(("error", save_data, RuntimeError(f"Serialization failed: {pickle_err}")))
             return
+
+        result_tuple = ("success", save_data, output)
 
         result_queue.put(result_tuple)
         logging.info("Result successfully put in queue.")
@@ -572,9 +573,6 @@ class NodeExecutor:
             raise result
 
         logging.info("Node %s executed successfully in child process", self._node.__class__.__name__)
-
-        if isinstance(result, Tensor) and torch.cuda.is_available():
-            raise result
 
         return result
 

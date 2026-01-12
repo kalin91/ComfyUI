@@ -2,8 +2,9 @@
 
 import inspect
 import logging
+from functools import partial
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional, Tuple, Union, cast, Type
+from typing import Any, Callable, Optional, Tuple, cast, Type
 import torch
 import numpy as np
 from segment_anything.build_sam import Sam
@@ -244,10 +245,14 @@ class SimpleKSampler(MimicNode):
         }
 
     # pylint: disable=W0221
+    @SkipLayers.use_class_param(lambda inst: {"node_model": inst})
     def _process_impl(
-        self, latent_image: torch.Tensor, model: ModelPatcher, cond_pos_cnet: Any, cond_neg_cnet: Any
-    ) -> torch.Tensor:
+        self, latent_image: torch.Tensor, node_model: SkipLayers, cond_pos_cnet: Any, cond_neg_cnet: Any
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """A placeholder method to simulate processing."""
+
+        model = node_model.get_model(self.use_tune)
+        vae = node_model.vae
 
         # Prepare noise
         noisy_latent_image = fix_empty_latent_channels(model, latent_image)
@@ -278,7 +283,20 @@ class SimpleKSampler(MimicNode):
         for key in sampler_arguments:
             if key not in sampler_signature.parameters:
                 raise ValueError(f"Unexpected argument '{key}' for comfy.sample.sample")
-        return comfy.sample.sample(**sampler_arguments)
+        logging.info("Decoding...")
+        res: torch.Tensor = sample(**sampler_arguments)
+        images = vae.decode(res.clone())
+        logging.info("VAE Output Shape: %s", images.shape)
+
+        # Ensure BHWC (Batch, Height, Width, Channels)
+        if images.shape[1] == 3:
+            images = images.movedim(1, -1)
+
+        logging.info("Final Image Shape: %s", images.shape)
+
+        self._save_tensor(images, self.key())
+
+        return res, images
 
 
 class Prompts(MimicNode):
@@ -289,51 +307,31 @@ class Prompts(MimicNode):
         """Returns the key for the Prompts."""
         return "prompts"
 
-    @property
-    def positive(self) -> Union[str, list[tuple[torch.Tensor, dict[str, Any]]]]:
-        """Returns the positive prompt."""
-        return self._positive
-
-    @property
-    def negative(self) -> Union[str, list[tuple[torch.Tensor, dict[str, Any]]]]:
-        """Returns the negative prompt."""
-        return self._negative
-
+    @Sd3Clip.use_class_param(lambda inst: {"clip": cast(Sd3Clip, inst).process()})
     # pylint: disable=W0221
     def _process_impl(
         self, clip: CLIP
     ) -> tuple[list[tuple[torch.Tensor, dict[str, Any]]], list[tuple[torch.Tensor, dict[str, Any]]]]:
         """Encodes the positive and negative prompts using the provided CLIP model."""
-        assert type(self.positive) is type(self.negative), "Positive and Negative prompts must be of the same type"
-        if isinstance(self.positive, str):
-            logging.info("Encoding prompts...")
-            tokens_pos = clip.tokenize(self.positive)
-            cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
+        logging.info("Encoding prompts...")
+        tokens_pos = clip.tokenize(self._positive)
+        cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
 
-            tokens_neg = clip.tokenize(self.negative)
-            cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
+        tokens_neg = clip.tokenize(self._negative)
+        cond_neg = clip.encode_from_tokens_scheduled(tokens_neg)
 
-            del tokens_pos
-            del tokens_neg
-            torch.cuda.empty_cache()
-            return (cond_pos, cond_neg)
-        return (self.positive, self.negative)
+        del tokens_pos
+        del tokens_neg
+        torch.cuda.empty_cache()
+        return (cond_pos, cond_neg)
 
     # pylint: disable=W0221
     # pylint: disable=W0201
-    def _update_impl(
-        self,
-        positive: Union[str, list[tuple[torch.Tensor, dict[str, Any]]]],
-        negative: Union[str, list[tuple[torch.Tensor, dict[str, Any]]]],
-    ) -> None:
+    def _update_impl(self, positive: str, negative: str) -> None:
         self._positive = positive
         self._negative = negative
 
-    def __init__(
-        self,
-        positive: Union[str, list[tuple[torch.Tensor, dict[str, Any]]]],
-        negative: Union[str, list[tuple[torch.Tensor, dict[str, Any]]]],
-    ):
+    def __init__(self, positive: str, negative: str):
         super().__init__()
         self.update(positive=positive, negative=negative)
 
@@ -351,6 +349,7 @@ class EmptyLatent(MimicNode):
         """Returns the starting image tensor, if any."""
         return self._start_img
 
+    @SkipLayers.use_class_param(lambda inst: {"vae": cast(SkipLayers, inst).vae})
     # pylint: disable=W0221
     def _process_impl(self, vae: VAE) -> torch.Tensor:
         """Generates and returns an empty latent tensor."""
@@ -421,9 +420,6 @@ class ApplyControlNet(MimicNode):
         """Returns the target ControlNet image preprocessor."""
         return self._target
 
-    @Prompts.use_class_param(
-        lambda inst: {"cond_pos": cast(Prompts, inst).positive, "cond_neg": cast(Prompts, inst).negative}
-    )
     @SkipLayers.use_class_param(lambda inst: {"vae": cast(SkipLayers, inst).vae})
     # pylint: disable=W0221
     def _process_impl(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
@@ -451,6 +447,10 @@ class ApplyControlNet(MimicNode):
         # Note: Don't delete controlnet here - it's copied into conds and
         # will be managed by ComfyUI's memory system via load_models_gpu()
         del image_tensor
+
+        # delete controlnet from conds
+        for cond in res:
+            del cond[0][1]["control"]
 
         comfy.model_management.soft_empty_cache()
 
@@ -692,30 +692,31 @@ class FaceDetailerNode(SimpleKSampler):
         )
         return base_dict
 
+    @SkipLayers.use_class_param(lambda inst: {"node_model": inst, "node_clip": Sd3Clip()})
     # pylint: disable=W0221
-    def _process_impl(self, input_image: torch.Tensor, **kwargs) -> torch.Tensor:
+    def _process_impl(
+        self, input_image: torch.Tensor, positive: Any, negative: Any, node_model: SkipLayers, node_clip: Sd3Clip
+    ) -> torch.Tensor:
         """Function to process image once rotated."""
 
-        # 10.5 FaceDetailer
+        model = node_model.get_model(self.use_tune)
+        vae = node_model.vae
+        clip = node_clip.process()
+
+        # FaceDetailer
         logging.info("Running FaceDetailer...")
 
         face_detailer = FaceDetailer()
 
-        # FaceDetailer.doit(image, model, clip, vae, guide_size, guide_size_for, max_size,
-        # seed, steps, cfg, sampler_name, scheduler, denoise, feather, noise_mask, force_inpaint,
-        # bbox_threshold, bbox_dilation, bbox_crop_factor, sam_detection_hint, sam_dilation, sam_threshold,
-        # sam_bbox_expansion, sam_mask_hint_threshold, sam_mask_hint_use_negative, drop_size, bbox_detector,
-        # sam_model_opt, segm_detector_opt, detailer_hook)
-
-        # Note: Arguments might vary slightly depending on version, checking signature would be good.
-        # Assuming standard arguments based on common usage.
-
         face_arguments = self.to_dict()
-
-        face_arguments.update(kwargs)
 
         face_arguments.update(
             {
+                "model": model,
+                "vae": vae,
+                "clip": clip,
+                "positive": positive,
+                "negative": negative,
                 "image": input_image,
                 "segm_detector_opt": None,  # Not using segm detector here
                 "detailer_hook": None,
@@ -881,7 +882,7 @@ class Rotator(MimicNode):
         self.update(angle=angle)
 
     # pylint: disable=W0221
-    def _process_impl(self, image: torch.Tensor, func: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
+    def _process_impl(self, image: torch.Tensor) -> Tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]]:
         """Rotates the given image tensor by the specified angle.
 
         Uses PIL with BICUBIC interpolation to minimize quality loss during rotation.
@@ -889,7 +890,7 @@ class Rotator(MimicNode):
         """
 
         if self._angle == 0:
-            return func(image)
+            return image, lambda x: x  # No rotation needed
 
         # getting original image size (BHWC format)
         batch_size, orig_h, orig_w, _channels = image.shape
@@ -917,21 +918,26 @@ class Rotator(MimicNode):
         rotated_images = torch.stack(rotated_list, dim=0).to(image.device)
         logging.info("Rotated image shape: %s", rotated_images.shape)
 
-        # Run the processing function (e.g., FaceDetailer)
-        pre_result: torch.Tensor = func(rotated_images)
+        result_fun = partial(Rotator._undo_rotate, angle=self._angle, orig_h=orig_h, orig_w=orig_w)
+        self._save_tensor(rotated_images, "rotated_image")
+
+        return rotated_images, result_fun
+
+    @classmethod
+    def _undo_rotate(cls, image: torch.Tensor, angle: float, orig_h: int, orig_w: int) -> torch.Tensor:
 
         # Rotate result back to original orientation
         logging.info("Rotating results back to original orientation...")
-        result_batch = pre_result.shape[0]
+        result_batch = image.shape[0]
         unrotated_list = []
         for i in range(result_batch):
             # Convert tensor to PIL
-            img_np = (pre_result[i].cpu().numpy() * 255).astype(np.uint8)
+            img_np = (image[i].cpu().numpy() * 255).astype(np.uint8)
             pil_img = Image.fromarray(img_np)
 
             # Rotate back with BICUBIC
             unrotated_pil = pil_img.rotate(
-                self._angle,  # Opposite direction
+                angle,  # Opposite direction
                 resample=Image.Resampling.BICUBIC,
                 expand=True,
             )

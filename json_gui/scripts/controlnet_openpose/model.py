@@ -119,6 +119,8 @@ class Model:
             assert value is not None, f"Property {name} is None."
             is_list = False
             prop_type = type(value)
+            if prop_type is Sd3Clip:
+                continue  # Skip CLIP property
             if isinstance(value, list):
                 is_list = True
                 prop_type = type(value[0]) if value else None
