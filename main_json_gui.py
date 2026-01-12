@@ -1,5 +1,5 @@
 """Main entry point for JSON Manager GUI."""
-from json_gui import json_manager_starter, json_manager_gui
+from json_gui.json_manager import json_manager_gui, json_manager_starter
 
 
 if __name__ == "__main__":

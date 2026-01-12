@@ -6,8 +6,8 @@ from typing import Callable
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
-from json_gui.scroll_utils import bind_frame_scroll_events
-from json_gui.json_tree_editor import open_preview
+from json_gui.json_manager.scroll_utils import bind_frame_scroll_events
+from json_gui.json_manager.json_tree_editor import open_preview
 
 
 class ImageViewer(ttk.Frame):

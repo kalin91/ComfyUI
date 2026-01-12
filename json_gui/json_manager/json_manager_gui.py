@@ -14,10 +14,11 @@ import yaml
 import torch
 import folder_paths
 from app.logger import setup_logger
-from json_gui.json_tree_editor import JSONTreeEditor
-from json_gui.scroll_utils import bind_frame_scroll_events
-from json_gui.image_viewer import ImageViewer
-from json_gui import loading_modal, utils as gui_utils
+from json_gui.json_manager.json_tree_editor import JSONTreeEditor
+from json_gui.json_manager.scroll_utils import bind_frame_scroll_events
+from json_gui.json_manager.image_viewer import ImageViewer
+from json_gui import utils as gui_utils
+from json_gui.json_manager import loading_modal
 import comfy.model_management
 from comfy.cli_args import args
 

@@ -6,7 +6,7 @@ import logging
 from typing import Any, Callable, Optional
 
 import torch
-from json_gui.mimic_classes import (
+from json_gui.scripts.mimic_classes import (
     OpenPosePose,
     CannyEdge,
     ApplyControlNet,
