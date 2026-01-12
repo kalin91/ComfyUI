@@ -1,78 +1,30 @@
 """
 Main entry point for JSON Manager GUI.
-Mocked PromptServer for testing purposes in Impact Pack.
-It'll display a simple Tkinter messagebox while mocked server is starting.
 """
 
-import tkinter as tk
-from tkinter import ttk
-import utils as _  # noqa: F401
-import comfy.options
+import os
+import sys
 
-comfy.options.enable_args_parsing()
+# CRITICAL: Configure sys.path BEFORE any other imports.
+# This ensures that 'utils' resolves to ComfyUI/utils/ (the package)
+# and not to comfy/utils.py or json_gui/utils.py.
+# This is especially important for child processes spawned with 'spawn' mode.
+_current_file = os.path.abspath(__file__)
+_json_gui_dir = os.path.dirname(_current_file)
+_comfyui_root = os.path.dirname(_json_gui_dir)
 
+# Ensure ComfyUI root is FIRST in sys.path
+if _comfyui_root not in sys.path:
+    sys.path.insert(0, _comfyui_root)
+elif sys.path[0] != _comfyui_root:
+    sys.path.remove(_comfyui_root)
+    sys.path.insert(0, _comfyui_root)
 
-def show_loading(parent, message="Loading MockServer...") -> tk.Toplevel:
-    """Show a loading window with a message."""
-    win = tk.Toplevel(parent)
-    win.title("Loading")
-    win.geometry("300x80")
-    win.transient(parent)
-    win.grab_set()
-    label = tk.Label(win, text=message, font=("TkDefaultFont", 12))
-    label.pack(expand=True, fill="both", padx=20, pady=20)
-    win.update()
-    return win
+# Change CWD to ComfyUI root if not already there
+if os.getcwd() != _comfyui_root:
+    os.chdir(_comfyui_root)
 
+# Cleanup temporary variables
+del _current_file, _json_gui_dir, _comfyui_root
 
-# Mock PromptServer for Impact Pack
-class MockServer:
-    """
-    A mocked PromptServer for testing purposes in Impact Pack.
-    """
-
-    def __init__(self):
-        self.routes = self
-        self.last_node_id = "mock_node_id"
-
-    def post(self, _route) -> callable:
-        """Mocked post decorator."""
-
-        def decorator(func) -> callable:
-            """Return the original function without modification."""
-            return func
-
-        return decorator
-
-    def get(self, _route) -> callable:
-        """Mocked get decorator."""
-
-        def decorator(func) -> callable:
-            """Return the original function without modification."""
-            return func
-
-        return decorator
-
-    def add_on_prompt_handler(self, handler) -> None:
-        """Mocked add_on_prompt_handler method."""
-
-    def send_sync(self, event, data, sid=None) -> None:
-        """Mocked send_sync method."""
-
-
-root = tk.Tk()
-style = ttk.Style()
-if "clam" in style.theme_names():
-    style.theme_use("clam")
-
-# Show loading window
-loading_win = show_loading(root)
-
-import server  # noqa: E402 pylint: disable=C0413
-
-# Slow initialization goes here
-server.PromptServer.instance = MockServer()
-
-# Close loading window
-loading_win.destroy()
-root.destroy()
+import json_gui.server as _  # noqa: F401, E402 pylint: disable=C0413

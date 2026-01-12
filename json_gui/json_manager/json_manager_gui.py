@@ -13,21 +13,12 @@ from tkinter import ttk, messagebox, simpledialog
 import yaml
 import torch
 import folder_paths
-from app.logger import setup_logger
 from json_gui.json_manager.json_tree_editor import JSONTreeEditor
 from json_gui.json_manager.scroll_utils import bind_frame_scroll_events
 from json_gui.json_manager.image_viewer import ImageViewer
-from json_gui import utils as gui_utils
 from json_gui.json_manager import loading_modal
+from json_gui import p_logger, utils as gui_utils
 import comfy.model_management
-from comfy.cli_args import args
-
-
-logger = logging.getLogger()
-if logger.hasHandlers():
-    logger.handlers.clear()
-
-setup_logger(log_level=args.verbose, use_stdout=args.log_stdout)
 
 
 class JSONManagerApp:
@@ -61,6 +52,7 @@ class JSONManagerApp:
         """Set the flow callable and validate its signature."""
         if value is None:
             self._flow = None
+            self._flow_inst = None
             return
         # Validate that value is an instance of AbsFlow
         assert issubclass(value, gui_utils.AbsFlow), "flow must be an instance of AbsFlow"
@@ -70,6 +62,23 @@ class JSONManagerApp:
     def flow(self) -> None:
         """Delete the flow callable."""
         self._flow = None
+
+    @property
+    def flow_inst(self) -> Optional[gui_utils.AbsFlow]:
+        """Get the flow instance."""
+        return self._flow_inst
+
+    @flow_inst.setter
+    def flow_inst(self, value: Optional[gui_utils.AbsFlow]) -> None:
+        """Set the flow instance."""
+        assert isinstance(value, gui_utils.AbsFlow), "flow_inst must be an instance of AbsFlow"
+        self._flow_inst = value
+
+    @flow_inst.deleter
+    def flow_inst(self) -> None:
+        """Delete the flow instance."""
+        self._flow_inst = None
+        self._cleanup_vram()
 
     @property
     def flow_body(self) -> Optional[dict[str, Any]]:
@@ -102,6 +111,7 @@ class JSONManagerApp:
 
     def __init__(self, root: tk.Tk):
         self._flow = None
+        self._flow_inst: Optional[gui_utils.AbsFlow] = None
         self._has_changes = False
         self.root = root
         self.root.title("JSON Configuration Manager")
@@ -470,20 +480,43 @@ class JSONManagerApp:
         assert body is not None, "Flow body is not set"
 
         filepath = os.path.join(gui_utils.get_main_images_path(), foldername, filename)
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            self.json_editor.load_data(data, body)
-            self.current_file = filepath
-            self._mark_changes(False)
-            self.status_var.set(f"Loaded: {filename}")
-            self.image_viewer.clear()
-        except json.JSONDecodeError as e:
-            messagebox.showerror("JSON Error", f"Failed to parse JSON:\n{e}")
-            logging.exception("Failed to parse JSON file %s", filepath)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load file:\n{e}")
-            logging.exception("Failed to load file %s", filepath)
+        filename_without_ext = os.path.splitext(filename)[0]
+
+        def load_file() -> None:
+            """Load the selected JSON file and execute the flow."""
+            try:
+                logging.info("Loading JSON file: %s", filepath)
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.json_editor.load_data(data, body)
+                self.current_file = filepath
+                self._mark_changes(False)
+                self.status_var.set(f"Loaded: {filename}")
+                self.image_viewer.clear()
+                del self.flow_inst
+                # Check memory status before execution
+                if not self._check_memory_available():
+                    raise MemoryError("GPU memory is too fragmented. Please restart the application.")
+                logging.info("Creating Flow instance for file: %s", filepath)
+                assert self.flow is not None, "Flow class is not set"
+                assert issubclass(self.flow, gui_utils.AbsFlow), "Flow must be a subclass of AbsFlow"
+                # Execute the flow
+                self.flow_inst = self.flow(foldername, filename_without_ext)  # pylint: disable=E1102
+            except json.JSONDecodeError as e:
+                messagebox.showerror("JSON Error", f"Failed to parse JSON:\n{e}")
+                logging.exception("Failed to parse JSON file %s", filepath)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load file:\n{e}")
+                logging.exception("Failed to load file %s", filepath)
+
+        loading_modal.show_loading_modal(
+            self.root,
+            load_file,
+            (),
+            f"Loading Flow {foldername}: {filename_without_ext}...",
+            False,
+            p_logger.LOG_QUEUE,
+        )
 
     def _save_file(self) -> None:
         """Save changes to the current file."""
@@ -572,7 +605,6 @@ class JSONManagerApp:
             return
 
         # Get filename without extension
-        filename = os.path.basename(self.current_file)
         foldername = self.folder_var.get()
         try:
             assert foldername, "Folder name is empty"
@@ -582,36 +614,23 @@ class JSONManagerApp:
             logging.exception("Execution failed")
             raise e
 
-        filename_without_ext = os.path.splitext(filename)[0]
-
-        self.status_var.set(f"Executing with {filename_without_ext}...")
+        self.status_var.set(f"Executing with {self.flow_inst.file_path}...")
         self.root.update()
 
         def run_flow_direct() -> None:
             """Run the flow directly in this process."""
             try:
-                # Clean up memory before execution
-                self._cleanup_vram()
-
-                # Check memory status before execution
-                if not self._check_memory_available():
-                    raise MemoryError("GPU memory is too fragmented. Please restart the application.")
-
-                # Execute the flow
-                flow_class = self.flow
-                assert flow_class is not None, "Flow class is not set"
+                assert self.flow_inst is not None, "Flow instance is not set"
 
                 logging.info(
                     "Executing flow: script=%s, folder=%s, file=%s, steps=%s",
                     foldername,
                     foldername,
-                    filename_without_ext,
+                    self.flow_inst.file_path,
                     steps,
                 )
 
-                flow_inst = flow_class(foldername, filename_without_ext)
-                image_paths = flow_inst.run(steps)
-
+                image_paths = self.flow_inst.run(steps)
                 # Clean up after execution
                 self._cleanup_vram()
 
@@ -641,8 +660,9 @@ class JSONManagerApp:
             self.root,
             run_flow_direct,
             (),
-            f"Executing Flow {foldername}: {filename_without_ext}...",
+            f"Executing Flow {foldername}: {self.flow_inst.file_path}...",
             True,
+            p_logger.LOG_QUEUE,
         )
 
     def _cleanup_vram(self) -> None:
