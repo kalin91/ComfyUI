@@ -57,7 +57,13 @@ class _TkTextHandler(logging.Handler):
 
     def emit(self, record) -> None:
         """Emit a log record to the TkTextWriter."""
-        msg = self.format(record) + "\n"
+        # Check if this is a progress bar update from child process
+        is_progress = getattr(record, "is_progress", False)
+        if is_progress:
+            # For progress bars: use \r prefix (no level prefix, no newline)
+            msg = "\r" + record.getMessage()
+        else:
+            msg = self.format(record) + "\n"
         self.writer.write_to_widget(msg)
 
 
@@ -276,7 +282,8 @@ def show_loading_modal(
                 log_queue_poll()
             except Exception:
                 pass
-        parent.after(100, parent.update())
+        parent.update()
+        # time.sleep(0.01)  # Optional small sleep to reduce CPU usage
 
 
 def auto_close_info(parent, title, message, timeout=5000) -> None:

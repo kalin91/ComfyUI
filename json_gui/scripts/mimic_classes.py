@@ -1,41 +1,128 @@
-"""Mimic classes for various components."""
+"""Mimic child classes for various components."""
 
 import inspect
-import os
 import logging
+from functools import partial
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Tuple, cast, Type
 import torch
 import numpy as np
 from segment_anything.build_sam import Sam
 import comfy.model_management
 from comfy_extras.nodes_sd3 import SkipLayerGuidanceSD3
 from comfy_extras.nodes_images import ResizeAndPadImage
+from comfy_extras.nodes_mask import MaskToImage
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
-from comfy.sd import load_checkpoint_guess_config, VAE, CLIP
+from comfy.sd import load_checkpoint_guess_config, VAE, CLIP, load_clip
 from comfy.model_patcher import ModelPatcher
 from comfy.controlnet import load_controlnet
 from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.open_pose import OpenposeDetector
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.canny import CannyDetector
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
-from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader
+from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader, FaceDetailer
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
 from nodes import ControlNetApplyAdvanced
 import folder_paths
-import node_helpers
-from PIL import Image, ImageOps, ImageSequence
+from PIL import Image
+from json_gui.scripts.mimic import MimicNode
 
 
-class ControlNetImgPreprocessor(ABC):
+class Sd3Clip(MimicNode):
+    """A class representing SD3 CLIP settings."""
+
+    CLIP_G_PATH = "sd35m/clip_g.safetensors"
+    CLIP_L_PATH = "sd35m/clip_l.safetensors"
+    T5_PATH = "sd35m/t5xxl_fp16.safetensors"
+
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the Sd3Clip."""
+        return "sd3_clip"
+
+    # pylint: disable=W0201
+    # pylint: disable=W0221
+    def _process_impl(self) -> CLIP:
+        """Loads the Triple CLIP model."""
+        logging.info("Loading CLIPs...")
+        clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", self.CLIP_G_PATH)
+        clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", self.CLIP_L_PATH)
+        clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", self.T5_PATH)
+        return load_clip(
+            ckpt_paths=[clip_path1, clip_path2, clip_path3],
+            embedding_directory=folder_paths.get_folder_paths("embeddings"),
+        )
+
+    # pylint: disable=W0221
+    def _update_impl(self) -> None:
+        """PASS - Loads the CLIP model."""
+        self._clip = None
+
+    def __init__(self):
+        super().__init__()
+        self.update()
+
+
+class SkipLayers(MimicNode):
+    """A class representing skip layer guidance settings."""
+
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the SkipLayers."""
+        return "skip_layers_model"
+
+    CHECKPOINT_PATH = "sd3.5_medium.safetensors"
+
+    # pylint: disable=W0221
+    def _process_impl(self, use_tuned: bool) -> Tuple[ModelPatcher, VAE]:
+        """Returns the tuned model."""
+        # 1. Load Model and VAE
+        logging.info("Loading Checkpoint...")
+
+        # Free memory before loading the large checkpoint (~10.5GB)
+        comfy.model_management.unload_all_models()
+        comfy.model_management.soft_empty_cache()
+
+        ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", self.CHECKPOINT_PATH)
+        base_model, _a, vae, _b = load_checkpoint_guess_config(
+            ckpt_path,
+            output_vae=True,
+            output_clip=False,
+            embedding_directory=folder_paths.get_folder_paths("embeddings"),
+        )
+
+        if self._layers:
+            result: tuple = SkipLayerGuidanceSD3.execute(
+                base_model,
+                self._layers,
+                self._scale,
+                self._start_percent,
+                self._end_percent,
+            )
+            tunned_model = result[0]
+        else:
+            tunned_model = base_model
+        return tunned_model if use_tuned else base_model, vae
+
+    def process(self, use_tuned: bool = True) -> Tuple[ModelPatcher, VAE]:
+        """Processes and returns the model and VAE."""
+        return super().process(use_tuned)
+
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, layers: list[int], scale: float, start_percent: float, end_percent: float) -> None:
+        self._layers = ",".join(str(layer) for layer in layers)
+        self._scale = scale
+        self._start_percent = start_percent
+        self._end_percent = end_percent
+
+    def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
+        super().__init__()
+        self.update(layers=layers, scale=scale, start_percent=start_percent, end_percent=end_percent)
+
+
+class ControlNetImgPreprocessor(MimicNode, ABC):
     """Abstract base class for ControlNet image preprocessors."""
-
-    def __new__(cls, image_name: str, skip: bool, **kwargs) -> "ControlNetImgPreprocessor":
-        if skip:
-            logging.info("Skipping ControlNet image preprocessor for %s", image_name)
-            return None  # type: ignore
-        instance = super(ControlNetImgPreprocessor, cls).__new__(cls)
-        return instance
 
     @property
     @abstractmethod
@@ -47,18 +134,12 @@ class ControlNetImgPreprocessor(ABC):
         """Returns whether to skip this preprocessor."""
         return self._skip
 
-    @property
-    def save_tensor(self) -> Optional[Callable[[torch.Tensor], None]]:
-        """Returns a function to save the tensor."""
-        return self._save_tensor
+    def tensor(self) -> Any:
+        """Returns the processed tensor."""
+        return self.process()
 
-    @save_tensor.setter
-    def save_tensor(self, value: Callable[[torch.Tensor], None]) -> None:
-        """Sets the function to save the tensor."""
-        assert callable(value), "save_tensor must be a callable function."
-        self._save_tensor = value
-
-    def tensor(self) -> torch.Tensor:
+    # pylint: disable=W0221
+    def _process_impl(self) -> Any:
         """Processes the image and returns a tensor."""
         res = self._tensor_impl(self._controlnet_img)
         if self._save_tensor:
@@ -71,72 +152,50 @@ class ControlNetImgPreprocessor(ABC):
 
     def __init__(self, image_name: str, skip: bool) -> None:
         """Initializes the ControlNetImgPreprocessor with the given image name."""
+        super().__init__()
+        if type(self) is ControlNetImgPreprocessor:  # pylint: disable=C0123
+            self.update(image_name=image_name, skip=skip)
 
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, image_name: str, skip: bool) -> None:
+        """Updates the ControlNet image preprocessor."""
         self._skip = skip
-        assert image_name, "Image name must be provided for ControlNetImgPreprocessor."
-        self._save_tensor: Optional[Callable[[torch.Tensor], None]] = None
-        logging.info("Loading ControlNet Image...")
-        input_folder = folder_paths.get_input_directory()
-        image_path = os.path.join(input_folder, image_name)
-        img = node_helpers.pillow(Image.open, image_path)
-
-        # Process image to tensor (similar to LoadImage node)
-        output_images = []
-        for i in ImageSequence.Iterator(img):
-            i = node_helpers.pillow(ImageOps.exif_transpose, i)
-            if i.mode == "I":
-                i = i.point(lambda i: i * (1 / 255))
-            image = i.convert("RGB")
-            image = np.array(image).astype(np.float32) / 255.0
-            image = torch.from_numpy(image)[None,]
-            output_images.append(image)
-
-        if len(output_images) > 1:
-            # If multiple frames, stack them? For now assume single image as per workflow
-            img_tensor = torch.cat(output_images, dim=0)
-        else:
-            img_tensor = output_images[0]
-
-        self._controlnet_img = img_tensor
+        self._controlnet_img = self._upload_image(image_name)
 
 
-class SimpleKSampler:
+class SimpleKSampler(MimicNode):
     """A simple KSampler class for demonstration purposes."""
 
-    @property
-    def seed(self) -> int:
-        """Returns the seed value."""
-        return self._seed
-
-    @property
-    def steps(self) -> int:
-        """Returns the number of steps."""
-        return self._steps
-
-    @property
-    def cfg(self) -> float:
-        """Returns the CFG scale."""
-        return self._cfg
-
-    @property
-    def sampler_name(self) -> str:
-        """Returns the name of the sampler."""
-        return self._sampler_name
-
-    @property
-    def scheduler(self) -> str:
-        """Returns the name of the scheduler."""
-        return self._scheduler
-
-    @property
-    def denoise(self) -> float:
-        """Returns the denoise value."""
-        return self._denoise
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the SimpleKSampler."""
+        return "simple_k_sampler"
 
     @property
     def use_tune(self) -> bool:
         """Returns whether to use tune."""
         return self._use_tune
+
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(
+        self,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        use_tune: bool,
+    ) -> None:
+        self._seed = seed
+        self._steps = steps
+        self._cfg = cfg
+        self._sampler_name = sampler_name
+        self._scheduler = scheduler
+        self._denoise = denoise
+        self._use_tune = use_tune
 
     def __init__(
         self,
@@ -148,13 +207,17 @@ class SimpleKSampler:
         denoise: float,
         use_tune: bool,
     ):
-        self._seed = seed
-        self._steps = steps
-        self._cfg = cfg
-        self._sampler_name = sampler_name
-        self._scheduler = scheduler
-        self._denoise = denoise
-        self._use_tune = use_tune
+        super().__init__()
+        if type(self) is SimpleKSampler:  # pylint: disable=C0123
+            self.update(
+                seed=seed,
+                steps=steps,
+                cfg=cfg,
+                sampler_name=sampler_name,
+                scheduler=scheduler,
+                denoise=denoise,
+                use_tune=use_tune,
+            )
 
     def _to_dict(self) -> dict:
         """Converts the SimpleKSampler instance to a dictionary."""
@@ -176,10 +239,14 @@ class SimpleKSampler:
             "denoise": self._denoise,
         }
 
-    def process(
-        self, latent_image: torch.Tensor, model: ModelPatcher, cond_pos_cnet: Any, cond_neg_cnet: Any
-    ) -> torch.Tensor:
+    # pylint: disable=W0221
+    @SkipLayers.use_class_param(lambda inst: {"node_model": inst})
+    def _process_impl(
+        self, latent_image: torch.Tensor, node_model: SkipLayers, cond_pos_cnet: Any, cond_neg_cnet: Any
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """A placeholder method to simulate processing."""
+
+        model, vae = node_model.process(self.use_tune)
 
         # Prepare noise
         noisy_latent_image = fix_empty_latent_channels(model, latent_image)
@@ -210,10 +277,23 @@ class SimpleKSampler:
         for key in sampler_arguments:
             if key not in sampler_signature.parameters:
                 raise ValueError(f"Unexpected argument '{key}' for comfy.sample.sample")
-        return comfy.sample.sample(**sampler_arguments)
+        logging.info("Decoding...")
+        res: torch.Tensor = sample(**sampler_arguments)
+        images = vae.decode(res.clone())
+        logging.info("VAE Output Shape: %s", images.shape)
+
+        # Ensure BHWC (Batch, Height, Width, Channels)
+        if images.shape[1] == 3:
+            images = images.movedim(1, -1)
+
+        logging.info("Final Image Shape: %s", images.shape)
+
+        self._save_tensor(images, self.key())
+
+        return res, images
 
 
-class Prompts:
+class Prompts(MimicNode):
     """A class representing positive and negative prompts."""
 
     @classmethod
@@ -221,7 +301,9 @@ class Prompts:
         """Returns the key for the Prompts."""
         return "prompts"
 
-    def process(
+    @Sd3Clip.use_class_param(lambda inst: {"clip": cast(Sd3Clip, inst).process()})
+    # pylint: disable=W0221
+    def _process_impl(
         self, clip: CLIP
     ) -> tuple[list[tuple[torch.Tensor, dict[str, Any]]], list[tuple[torch.Tensor, dict[str, Any]]]]:
         """Encodes the positive and negative prompts using the provided CLIP model."""
@@ -237,61 +319,33 @@ class Prompts:
         torch.cuda.empty_cache()
         return (cond_pos, cond_neg)
 
-    def __init__(self, positive: str, negative: str):
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, positive: str, negative: str) -> None:
         self._positive = positive
         self._negative = negative
 
+    def __init__(self, positive: str, negative: str):
+        super().__init__()
+        self.update(positive=positive, negative=negative)
 
-class EmptyLatent:
+
+class EmptyLatent(MimicNode):
     """An empty latent class for placeholder purposes."""
 
-    def _upload_image(self, image_name: str) -> torch.Tensor:
-        """Uploads an image given its name."""
-        assert image_name, "Image name must be provided for ControlNetImgPreprocessor."
-
-        input_folder = folder_paths.get_input_directory()
-        image_path = os.path.join(input_folder, image_name)
-        img = node_helpers.pillow(Image.open, image_path)
-
-        # Process image to tensor (similar to LoadImage node)
-        output_images = []
-        for i in ImageSequence.Iterator(img):
-            i = node_helpers.pillow(ImageOps.exif_transpose, i)
-            if i.mode == "I":
-                i = i.point(lambda i: i * (1 / 255))
-            image = i.convert("RGB")
-            image = np.array(image).astype(np.float32) / 255.0
-            image = torch.from_numpy(image)[None,]
-            output_images.append(image)
-
-        if len(output_images) > 1:
-            # If multiple frames, stack them? For now assume single image as per workflow
-            img_tensor = torch.cat(output_images, dim=0)
-        else:
-            img_tensor = output_images[0]
-        return img_tensor
-
-    @property
-    def width(self) -> int:
-        """Returns the width of the latent."""
-        return self._width
-
-    @property
-    def height(self) -> int:
-        """Returns the height of the latent."""
-        return self._height
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the EmptyLatent."""
+        return "empty_latent"
 
     @property
     def start_img(self) -> Optional[torch.Tensor]:
         """Returns the starting image tensor, if any."""
         return self._start_img
 
-    @property
-    def batch_size(self) -> int:
-        """Returns the batch size of the latent."""
-        return self._batch_size
-
-    def latent(self, vae: VAE) -> torch.Tensor:
+    @SkipLayers.use_class_param(lambda inst: {"vae": cast(SkipLayers, inst).process(False)[1]})
+    # pylint: disable=W0221
+    def _process_impl(self, vae: VAE) -> torch.Tensor:
         """Generates and returns an empty latent tensor."""
         if self.start_img is not None:
             logging.info("Creating latent from start image...")
@@ -334,40 +388,40 @@ class EmptyLatent:
             device=comfy.model_management.intermediate_device(),
         )
 
-    def __init__(self, width: int, height: int, batch_size: int, image_name: Optional[str]) -> None:
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, width: int, height: int, batch_size: int, image_name: Optional[str]) -> None:
         self._width = width
         self._height = height
         self._batch_size = batch_size
         self._start_img = self._upload_image(image_name) if image_name and image_name != "<None>" else None
 
+    def __init__(self, width: int, height: int, batch_size: int, image_name: str):
+        super().__init__()
+        self.update(width=width, height=height, batch_size=batch_size, image_name=image_name)
 
-class ApplyControlNet:
+
+class ApplyControlNet(MimicNode):
     """Returns the ControlNet application parameters."""
 
-    @property
-    def strength(self) -> float:
-        """Returns the strength value."""
-        return self._strength
-
-    @property
-    def start_percentage(self) -> float:
-        """Returns the start percentage value."""
-        return self._start_percentage
-
-    @property
-    def end_percentage(self) -> float:
-        """Returns the end percentage value."""
-        return self._end_percentage
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the ApplyControlNet."""
+        return "apply_control_net"
 
     @property
     def target(self) -> ControlNetImgPreprocessor:
         """Returns the target ControlNet image preprocessor."""
         return self._target
 
-    def conditionals(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
+    @SkipLayers.use_class_param(lambda inst: {"vae": cast(SkipLayers, inst).process(False)[1]})
+    # pylint: disable=W0221
+    def _process_impl(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
         """Returns placeholder conditionals."""
 
         image_tensor: torch.Tensor = self._target.tensor()
+
+        self._save_tensor(image_tensor, self.target.key())
 
         logging.info("Loading ControlNet...")
         controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self._target.controlnet_path)
@@ -387,51 +441,59 @@ class ApplyControlNet:
         # Note: Don't delete controlnet here - it's copied into conds and
         # will be managed by ComfyUI's memory system via load_models_gpu()
         del image_tensor
+
+        # delete controlnet from conds
+        for cond in res:
+            del cond[0][1]["control"]
+
         comfy.model_management.soft_empty_cache()
 
         return res
 
-    def __init__(
-        self, strength: float, start_percentage: float, end_percentage: float, target: ControlNetImgPreprocessor
-    ):
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(
+        self,
+        strength: float,
+        start_percentage: float,
+        end_percentage: float,
+        target: Tuple[Type[ControlNetImgPreprocessor], dict[str, Any]],
+    ) -> None:
+        target_cls, target_args = target
+        assert "skip" in target_args, "target_args must include 'skip' key"
         self._strength = strength
         self._start_percentage = start_percentage
         self._end_percentage = end_percentage
-        self._target = target
+        self._target = target_cls(**target_args) if not target_args.get("skip", False) else None
+
+    def __init__(
+        self,
+        strength: float,
+        start_percentage: float,
+        end_percentage: float,
+        target: Tuple[Type[ControlNetImgPreprocessor], dict[str, Any]],
+    ):
+        super().__init__()
+        self.update(
+            strength=strength,
+            start_percentage=start_percentage,
+            end_percentage=end_percentage,
+            target=target,
+        )
 
 
 class OpenPosePose(ControlNetImgPreprocessor):
     """A class representing OpenPose pose settings."""
 
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the OpenPosePose."""
+        return "openpose_pose"
+
     @property
     def controlnet_path(self) -> str:
         """Returns the ControlNet path."""
         return self._controlnet_path
-
-    @property
-    def detect_body(self) -> bool:
-        """Returns whether body detection is enabled."""
-        return self._detect_body
-
-    @property
-    def detect_hands(self) -> bool:
-        """Returns whether hand detection is enabled."""
-        return self._detect_hands
-
-    @property
-    def detect_face(self) -> bool:
-        """Returns whether face detection is enabled."""
-        return self._detect_face
-
-    @property
-    def scale_stick_for_xinsr_cn(self) -> bool:
-        """Returns whether OpenPose scale stick for xinsr_cn is enabled."""
-        return self._scale_stick_for_xinsr_cn
-
-    @property
-    def resolution(self) -> int:
-        """Returns the OpenPose resolution."""
-        return self._resolution
 
     def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
         """Processes the image tensor using OpenPose preprocessor."""
@@ -447,12 +509,12 @@ class OpenPosePose(ControlNetImgPreprocessor):
         result = aux_utils.common_annotator_call(
             lambda image, **kwargs: openpose_model(image, **kwargs)[0],  # noqa: F821
             cnet_img,
-            include_hand=self.detect_hands,
-            include_face=self.detect_face,
-            include_body=self.detect_body,
+            include_hand=self._detect_hands,
+            include_face=self._detect_face,
+            include_body=self._detect_body,
             image_and_json=True,
-            xinsr_stick_scaling=self.scale_stick_for_xinsr_cn,
-            resolution=self.resolution,
+            xinsr_stick_scaling=self._scale_stick_for_xinsr_cn,
+            resolution=self._resolution,
         )
 
         # Clean up OpenPose model after use
@@ -460,6 +522,27 @@ class OpenPosePose(ControlNetImgPreprocessor):
         comfy.model_management.soft_empty_cache()
 
         return result
+
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(
+        self,
+        image_name: str,
+        detect_body: bool,
+        detect_hands: bool,
+        detect_face: bool,
+        scale_stick_for_xinsr_cn: bool,
+        resolution: int,
+        controlnet_path: str,
+        skip: bool,
+    ) -> None:
+        super()._update_impl(image_name, skip)
+        self._detect_body = detect_body
+        self._detect_hands = detect_hands
+        self._detect_face = detect_face
+        self._scale_stick_for_xinsr_cn = scale_stick_for_xinsr_cn
+        self._resolution = resolution
+        self._controlnet_path = controlnet_path
 
     def __init__(
         self,
@@ -473,36 +556,30 @@ class OpenPosePose(ControlNetImgPreprocessor):
         skip: bool,
     ):
         super().__init__(image_name, skip)
-        self._detect_body = detect_body
-        self._detect_hands = detect_hands
-        self._detect_face = detect_face
-        self._scale_stick_for_xinsr_cn = scale_stick_for_xinsr_cn
-        self._resolution = resolution
-        self._controlnet_path = controlnet_path
+        self.update(
+            image_name=image_name,
+            detect_body=detect_body,
+            detect_hands=detect_hands,
+            detect_face=detect_face,
+            scale_stick_for_xinsr_cn=scale_stick_for_xinsr_cn,
+            resolution=resolution,
+            controlnet_path=controlnet_path,
+            skip=skip,
+        )
 
 
 class CannyEdge(ControlNetImgPreprocessor):
     """A class representing Canny edge detector settings."""
 
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the CannyEdge."""
+        return "canny_edge"
+
     @property
     def controlnet_path(self) -> str:
         """Returns the ControlNet path."""
         return self._controlnet_path
-
-    @property
-    def low_threshold(self) -> int:
-        """Returns the low threshold value."""
-        return self._low_threshold
-
-    @property
-    def high_threshold(self) -> int:
-        """Returns the high threshold value."""
-        return self._high_threshold
-
-    @property
-    def resolution(self) -> int:
-        """Returns the detection resolution."""
-        return self._resolution
 
     def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
         """Processes the image tensor using Canny edge detector."""
@@ -511,9 +588,9 @@ class CannyEdge(ControlNetImgPreprocessor):
         res = aux_utils.common_annotator_call(
             CannyDetector(),
             cnet_img,
-            low_threshold=self.low_threshold,
-            high_threshold=self.high_threshold,
-            resolution=self.resolution,
+            low_threshold=self._low_threshold,
+            high_threshold=self._high_threshold,
+            resolution=self._resolution,
         )
         # Resize to match ControlNet input size if needed
         if (res.shape[2], res.shape[3]) != (cnet_height, cnet_width):
@@ -526,6 +603,23 @@ class CannyEdge(ControlNetImgPreprocessor):
             )[0]
         return res
 
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(
+        self,
+        image_name: str,
+        low_threshold: int,
+        high_threshold: int,
+        resolution: int,
+        controlnet_path: str,
+        skip: bool,
+    ) -> None:
+        super()._update_impl(image_name, skip)
+        self._low_threshold = low_threshold
+        self._high_threshold = high_threshold
+        self._resolution = resolution
+        self._controlnet_path = controlnet_path
+
     def __init__(
         self,
         image_name: str,
@@ -536,14 +630,22 @@ class CannyEdge(ControlNetImgPreprocessor):
         skip: bool,
     ) -> None:
         super().__init__(image_name, skip)
-        self._low_threshold = low_threshold
-        self._high_threshold = high_threshold
-        self._resolution = resolution
-        self._controlnet_path = controlnet_path
+        self.update(
+            image_name=image_name,
+            low_threshold=low_threshold,
+            high_threshold=high_threshold,
+            resolution=resolution,
+            controlnet_path=controlnet_path,
+            skip=skip,
+        )
 
 
-class FaceDetailer(SimpleKSampler):
+class FaceDetailerNode(SimpleKSampler):
     """A class representing face detailer settings."""
+
+    @classmethod
+    def key(cls) -> str:
+        return "face_detailer"
 
     @property
     def sam_model_opt(self) -> Sam:
@@ -554,101 +656,6 @@ class FaceDetailer(SimpleKSampler):
     def bbox_detector(self) -> subcore.UltraBBoxDetector:
         """Returns the batch size."""
         return self._bbox_detector
-
-    @property
-    def guide_size(self) -> int:
-        """Returns the guide size."""
-        return self._guide_size
-
-    @property
-    def guide_size_for(self) -> bool:
-        """Returns whether to use guide size for."""
-        return self._guide_size_for
-
-    @property
-    def max_size(self) -> int:
-        """Returns the maximum size."""
-        return self._max_size
-
-    @property
-    def feather(self) -> int:
-        """Returns the feather value."""
-        return self._feather
-
-    @property
-    def noise_mask(self) -> bool:
-        """Returns whether noise mask is enabled."""
-        return self._noise_mask
-
-    @property
-    def force_inpaint(self) -> bool:
-        """Returns whether force inpaint is enabled."""
-        return self._force_inpaint
-
-    @property
-    def drop_size(self) -> int:
-        """Returns the drop size."""
-        return self._drop_size
-
-    @property
-    def cycle(self) -> int:
-        """Returns the cycle count."""
-        return self._cycle
-
-    @property
-    def bbox_threshold(self) -> float:
-        """Returns the bounding box threshold."""
-        return self._bbox_threshold
-
-    @property
-    def bbox_dilation(self) -> int:
-        """Returns the bounding box dilation."""
-        return self._bbox_dilation
-
-    @property
-    def bbox_crop_factor(self) -> float:
-        """Returns the bounding box crop factor."""
-        return self._bbox_crop_factor
-
-    @property
-    def sam_detection_hint(self) -> str:
-        """Returns the SAM detection hint."""
-        return self._sam_detection_hint
-
-    @property
-    def sam_dilation(self) -> int:
-        """Returns the SAM dilation."""
-        return self._sam_dilation
-
-    @property
-    def sam_threshold(self) -> float:
-        """Returns the SAM threshold."""
-        return self._sam_threshold
-
-    @property
-    def sam_bbox_expansion(self) -> int:
-        """Returns the SAM bounding box expansion."""
-        return self._sam_bbox_expansion
-
-    @property
-    def sam_mask_hint_threshold(self) -> float:
-        """Returns the SAM mask hint threshold."""
-        return self._sam_mask_hint_threshold
-
-    @property
-    def sam_mask_hint_use_negative(self) -> str:
-        """Returns whether to use negative SAM mask hint."""
-        return self._sam_mask_hint_use_negative
-
-    @property
-    def wildcard(self) -> str:
-        """Returns the wildcard."""
-        return self._wildcard
-
-    @property
-    def use_tune(self) -> bool:
-        """Returns whether to use tune."""
-        return self._use_tune
 
     def to_dict(self) -> dict:
         """Converts the FaceDetailer instance to a dictionary."""
@@ -678,6 +685,115 @@ class FaceDetailer(SimpleKSampler):
             }
         )
         return base_dict
+
+    @SkipLayers.use_class_param(lambda inst: {"node_model": inst, "node_clip": Sd3Clip()})
+    # pylint: disable=W0221
+    def _process_impl(
+        self, input_image: torch.Tensor, positive: Any, negative: Any, node_model: SkipLayers, node_clip: Sd3Clip
+    ) -> torch.Tensor:
+        """Function to process image once rotated."""
+
+        model, vae = node_model.process(self.use_tune)
+        clip = node_clip.process()
+
+        # FaceDetailer
+        logging.info("Running FaceDetailer...")
+
+        face_detailer = FaceDetailer()
+
+        face_arguments = self.to_dict()
+
+        face_arguments.update(
+            {
+                "model": model,
+                "vae": vae,
+                "clip": clip,
+                "positive": positive,
+                "negative": negative,
+                "image": input_image,
+                "segm_detector_opt": None,  # Not using segm detector here
+                "detailer_hook": None,
+            }
+        )
+
+        # validate face_arguments keys against FaceDetailer.doit signature would be ideal
+        face_signature = inspect.signature(face_detailer.doit)
+        for key in face_arguments:
+            if key not in face_signature.parameters:
+                raise ValueError(f"Unexpected argument '{key}' for FaceDetailer.doit")
+
+        result_images, cropped_images, cropped_alpha, mask = face_detailer.doit(**face_arguments)[:4]
+        if self._save_tensor:
+            for idx, cropped in enumerate(cropped_images):
+                self._save_tensor(cropped, f"face-cropped-{idx}")
+            for idx, alpha in enumerate(cropped_alpha):
+                self._save_tensor(alpha, f"face-alpha-{idx}")
+            mask_img_tensor: tuple = MaskToImage().execute(mask).result[0]  # pylint: disable=E1136
+            self._save_tensor(mask_img_tensor, "face-mask")
+        return result_images
+
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(
+        self,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        guide_size: int,
+        guide_size_for: bool,
+        max_size: int,
+        feather: int,
+        noise_mask: bool,
+        force_inpaint: bool,
+        drop_size: int,
+        cycle: int,
+        bbox_threshold: float,
+        bbox_dilation: int,
+        bbox_crop_factor: float,
+        sam_detection_hint: str,
+        sam_dilation: int,
+        sam_threshold: float,
+        sam_bbox_expansion: int,
+        sam_mask_hint_threshold: float,
+        sam_mask_hint_use_negative: str,
+        bbox_detector: str,
+        sam_model_opt: str,
+        wildcard: str,
+        use_tune: bool,
+    ) -> None:
+        super()._update_impl(seed, steps, cfg, sampler_name, scheduler, denoise, use_tune)
+        self._guide_size = guide_size
+        self._guide_size_for = guide_size_for
+        self._max_size = max_size
+        self._feather = feather
+        self._noise_mask = noise_mask
+        self._force_inpaint = force_inpaint
+        self._drop_size = drop_size
+        self._cycle = cycle
+        self._bbox_threshold = bbox_threshold
+        self._bbox_dilation = bbox_dilation
+        self._bbox_crop_factor = bbox_crop_factor
+        self._sam_detection_hint = sam_detection_hint
+        self._sam_dilation = sam_dilation
+        self._sam_threshold = sam_threshold
+        self._sam_bbox_expansion = sam_bbox_expansion
+        self._sam_mask_hint_threshold = sam_mask_hint_threshold
+        self._sam_mask_hint_use_negative = sam_mask_hint_use_negative
+        self._wildcard = wildcard
+
+        # Free memory before loading detection models
+        comfy.model_management.soft_empty_cache()
+
+        bbox_provider = UltralyticsDetectorProvider()
+        # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
+        self._bbox_detector, _c = bbox_provider.doit(bbox_detector)
+
+        sam_loader = SAMLoader()
+        # SAMLoader.load_model returns (SAM_MODEL,)
+        self._sam_model_opt = sam_loader.load_model(sam_model_opt)[0]
 
     def __init__(
         self,
@@ -710,49 +826,56 @@ class FaceDetailer(SimpleKSampler):
         use_tune: bool,
     ):
         super().__init__(seed, steps, cfg, sampler_name, scheduler, denoise, use_tune)
-        self._guide_size = guide_size
-        self._guide_size_for = guide_size_for
-        self._max_size = max_size
-        self._feather = feather
-        self._noise_mask = noise_mask
-        self._force_inpaint = force_inpaint
-        self._drop_size = drop_size
-        self._cycle = cycle
-        self._bbox_threshold = bbox_threshold
-        self._bbox_dilation = bbox_dilation
-        self._bbox_crop_factor = bbox_crop_factor
-        self._sam_detection_hint = sam_detection_hint
-        self._sam_dilation = sam_dilation
-        self._sam_threshold = sam_threshold
-        self._sam_bbox_expansion = sam_bbox_expansion
-        self._sam_mask_hint_threshold = sam_mask_hint_threshold
-        self._sam_mask_hint_use_negative = sam_mask_hint_use_negative
-        self._wildcard = wildcard
+        self.update(
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            denoise=denoise,
+            use_tune=use_tune,
+            guide_size=guide_size,
+            guide_size_for=guide_size_for,
+            max_size=max_size,
+            feather=feather,
+            noise_mask=noise_mask,
+            force_inpaint=force_inpaint,
+            drop_size=drop_size,
+            cycle=cycle,
+            bbox_threshold=bbox_threshold,
+            bbox_dilation=bbox_dilation,
+            bbox_crop_factor=bbox_crop_factor,
+            sam_detection_hint=sam_detection_hint,
+            sam_dilation=sam_dilation,
+            sam_threshold=sam_threshold,
+            sam_bbox_expansion=sam_bbox_expansion,
+            sam_mask_hint_threshold=sam_mask_hint_threshold,
+            sam_mask_hint_use_negative=sam_mask_hint_use_negative,
+            bbox_detector=bbox_detector,
+            sam_model_opt=sam_model_opt,
+            wildcard=wildcard,
+        )
 
-        # Free memory before loading detection models
-        comfy.model_management.soft_empty_cache()
 
-        bbox_provider = UltralyticsDetectorProvider()
-        # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
-        self._bbox_detector, _c = bbox_provider.doit(bbox_detector)
-
-        sam_loader = SAMLoader()
-        # SAMLoader.load_model returns (SAM_MODEL,)
-        self._sam_model_opt = sam_loader.load_model(sam_model_opt)[0]
-
-
-class Rotator:
+class Rotator(MimicNode):
     """A class representing image rotation settings."""
 
-    @property
-    def angle(self) -> float:
-        """Returns the rotation angle."""
-        return self._angle
+    @classmethod
+    def key(cls) -> str:
+        """Returns the key for the Rotator."""
+        return "rotator"
 
-    def __init__(self, angle: float):
+    # pylint: disable=W0221
+    # pylint: disable=W0201
+    def _update_impl(self, angle: float) -> None:
         self._angle = angle
 
-    def rotate_image(self, image: torch.Tensor, func: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
+    def __init__(self, angle: float):
+        super().__init__()
+        self.update(angle=angle)
+
+    # pylint: disable=W0221
+    def _process_impl(self, image: torch.Tensor) -> Tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]]:
         """Rotates the given image tensor by the specified angle.
 
         Uses PIL with BICUBIC interpolation to minimize quality loss during rotation.
@@ -760,7 +883,7 @@ class Rotator:
         """
 
         if self._angle == 0:
-            return func(image)
+            return image, lambda x: x  # No rotation needed
 
         # getting original image size (BHWC format)
         batch_size, orig_h, orig_w, _channels = image.shape
@@ -788,21 +911,26 @@ class Rotator:
         rotated_images = torch.stack(rotated_list, dim=0).to(image.device)
         logging.info("Rotated image shape: %s", rotated_images.shape)
 
-        # Run the processing function (e.g., FaceDetailer)
-        pre_result: torch.Tensor = func(rotated_images)
+        result_fun = partial(Rotator._undo_rotate, angle=self._angle, orig_h=orig_h, orig_w=orig_w)
+        self._save_tensor(rotated_images, "rotated_image")
+
+        return rotated_images, result_fun
+
+    @classmethod
+    def _undo_rotate(cls, image: torch.Tensor, angle: float, orig_h: int, orig_w: int) -> torch.Tensor:
 
         # Rotate result back to original orientation
         logging.info("Rotating results back to original orientation...")
-        result_batch = pre_result.shape[0]
+        result_batch = image.shape[0]
         unrotated_list = []
         for i in range(result_batch):
             # Convert tensor to PIL
-            img_np = (pre_result[i].cpu().numpy() * 255).astype(np.uint8)
+            img_np = (image[i].cpu().numpy() * 255).astype(np.uint8)
             pil_img = Image.fromarray(img_np)
 
             # Rotate back with BICUBIC
             unrotated_pil = pil_img.rotate(
-                self._angle,  # Opposite direction
+                angle,  # Opposite direction
                 resample=Image.Resampling.BICUBIC,
                 expand=True,
             )
@@ -821,50 +949,3 @@ class Rotator:
 
         logging.info("Final cropped image shape: %s", rotated_image.shape)
         return rotated_image
-
-
-class SkipLayers:
-    """A class representing skip layer guidance settings."""
-
-    CHECKPOINT_PATH = "sd3.5_medium.safetensors"
-
-    def get_model(self, use_tuned: bool) -> ModelPatcher:
-        """Returns the tuned model."""
-        return self._tunned_model if use_tuned else self._base_model
-
-    @property
-    def vae(self) -> VAE:
-        """Returns the VAE."""
-        return self._vae
-
-    def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
-        # 1. Load Model and VAE
-        logging.info("Loading Checkpoint...")
-
-        # Free memory before loading the large checkpoint (~10.5GB)
-        comfy.model_management.unload_all_models()
-        comfy.model_management.soft_empty_cache()
-
-        ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", self.CHECKPOINT_PATH)
-        self._base_model, _a, self._vae, _b = load_checkpoint_guess_config(
-            ckpt_path,
-            output_vae=True,
-            output_clip=False,
-            embedding_directory=folder_paths.get_folder_paths("embeddings"),
-        )
-        self._layers = ",".join(str(layer) for layer in layers)
-        self._scale = scale
-        self._start_percent = start_percent
-        self._end_percent = end_percent
-
-        if self._layers:
-            result: tuple = SkipLayerGuidanceSD3.execute(
-                self._base_model,
-                self._layers,
-                self._scale,
-                self._start_percent,
-                self._end_percent,
-            )
-            self._tunned_model = result[0]
-        else:
-            self._tunned_model = self._base_model

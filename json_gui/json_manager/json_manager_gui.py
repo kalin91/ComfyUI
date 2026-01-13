@@ -515,7 +515,7 @@ class JSONManagerApp:
             (),
             f"Loading Flow {foldername}: {filename_without_ext}...",
             False,
-            p_logger.LOG_QUEUE,
+            p_logger.poll_log_queue,
         )
 
     def _save_file(self) -> None:
@@ -662,7 +662,7 @@ class JSONManagerApp:
             (),
             f"Executing Flow {foldername}: {self.flow_inst.file_path}...",
             True,
-            p_logger.LOG_QUEUE,
+            p_logger.poll_log_queue,
         )
 
     def _cleanup_vram(self) -> None:

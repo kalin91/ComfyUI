@@ -28,3 +28,6 @@ if os.getcwd() != _comfyui_root:
 del _current_file, _json_gui_dir, _comfyui_root
 
 import json_gui.server as _  # noqa: F401, E402 pylint: disable=C0413
+from json_gui.json_manager import json_manager_starter  # noqa: F401, E402 pylint: disable=C0413
+
+json_manager_starter.apply_custom_paths()
