@@ -6,12 +6,9 @@ import logging
 from typing import Any, Callable, Optional, cast
 
 import torch
+from json_gui.scripts.mimic_controlnet import ControlNetImgPreprocessor, CannyEdge, OpenPosePose, ApplyControlNet
 from json_gui.scripts.mimic_classes import (
     Sd3Clip,
-    ControlNetImgPreprocessor,
-    OpenPosePose,
-    CannyEdge,
-    ApplyControlNet,
     EmptyLatent,
     SimpleKSampler,
     FaceDetailerNode,

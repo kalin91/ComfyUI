@@ -3,9 +3,10 @@
 import types
 import time
 import logging
+import copy
 import uuid
 from functools import wraps, partial
-from typing import Any, Callable, Optional, Type, TypeVar, Generic
+from typing import Any, Callable, Literal, Optional, Type, TypeVar, Generic, get_args, TypedDict
 from abc import ABC, abstractmethod
 import os
 import signal
@@ -22,39 +23,135 @@ from json_gui import p_logger, c_logger
 T = TypeVar("T")
 
 
+class CreationDict(TypedDict):
+    """Dictionary for expressing creation arguments."""
+
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+
+
 class DataWrapper(Generic[T]):
-    """A generic parameter wrapper class."""
+    """A wrapper for data that is built on demand."""
+
+    Val_Types = Literal["latent_tensor", "image_tensor", "other"]
 
     @property
     def identifier(self) -> str:
-        """Get the unique identifier for this wrapper."""
+        """
+        Get the unique identifier for this DataWrapper.
+
+        Returns:
+            str: The unique identifier for this wrapper.
+        """
         return self._identifier
 
     @property
-    def is_latent_tensor(self) -> bool:
+    def value_type(self) -> Val_Types:
         """Check if the wrapped value is a latent tensor."""
-        return self._is_latent_tensor
+        return self._val_type
 
     @property
-    def image_name(self) -> Optional[str]:
-        """Get the image name if applicable."""
-        return self._image_name
+    def args(self) -> dict[str, Any]:
+        """Get the arguments used to build the value."""
+        return self._args
+
+    @property
+    def skip_unwrap(self) -> bool:
+        """Check if unwrapping should be skipped."""
+        return self._skip_unwrap
+
+    @skip_unwrap.setter
+    def skip_unwrap(self, value: bool) -> None:
+        """Set whether unwrapping should be skipped."""
+        self._skip_unwrap = value
 
     def __init__(
         self,
-        value: T,
+        builder: Optional[Callable[..., T]] = None,
+        args: Optional[dict[str, Any]] = None,
+        *,
+        value: Optional[T] = None,
+        skip_unwrap: bool = False,
         identifier: Optional[str] = None,
-        is_latent_tensor: bool = False,
-        image_name: Optional[str] = None,
-    ):
-        self.value: T = value
+        val_type: Val_Types = "other",
+    ) -> None:
+        """
+        Initialize the DataWrapper, either with a builder function (lazy) or a pre-built value (eager).
+
+        Args:
+            builder (Optional[Callable[..., T]], optional): A function to build the value. Defaults to None.
+            value (Optional[T], optional): A pre-built value. Defaults to None.
+            args (Optional[dict[str, Any]], optional): Arguments to pass to the builder. Defaults to None.
+            skip_unwrap (bool, optional): Whether to skip unwrapping the value. Defaults to False.
+            identifier (Optional[str], optional): Unique identifier for this wrapper. Defaults to None.
+            val_type (Val_Types, optional): The type of the wrapped value. Defaults to "other".
+
+        Raises:
+            ValueError: If neither builder nor value is provided.
+            ValueError: If both builder and value are provided.
+            ValueError: If val_type is not one of the allowed types.
+            ValueError: If the builder function does not have a return type annotation.
+            ValueError: If the arguments for the builder are not pickle-serializable.
+
+        Returns:
+            DataWrapper: The initialized DataWrapper instance.
+        """
+        if builder is None and value is None:
+            raise ValueError("Either builder or value must be provided.")
+        if value is not None and builder is not None:
+            raise ValueError("Only one of builder or value should be provided.")
+
         self._identifier: str = identifier if identifier else str(uuid.uuid4())
-        self._is_latent_tensor: bool = is_latent_tensor
-        self._image_name: Optional[str] = image_name
+        self._val_type = val_type
+        self._skip_unwrap = skip_unwrap
+        self._args = {}
+        self._builder: Optional[Callable[..., T]] = None
+        self._value: Optional[T] = None
+
+        # Validate value type
+        if val_type not in get_args(self.Val_Types):
+            raise ValueError(f"val_type must be one of {get_args(self.Val_Types)}")
+
+        if builder:
+            self._args = args if args is not None else {}
+
+            # get the builder return type using inspect
+            sig = inspect.signature(builder)
+            return_type: Type = sig.return_annotation
+            if return_type is inspect.Signature.empty:
+                raise ValueError(
+                    "Builder function must have a return type annotation and must be pickle-serializable."
+                )
+            data = (builder, args)
+            self._builder: Callable[..., T] = builder
+        else:
+            self._value: T = value  # type: ignore
+            data = value
+
+        if val_type in ("latent_tensor", "image_tensor") and not isinstance(return_type, Tensor):
+            raise ValueError("Value must be a Tensor for latent_tensor or image_tensor types.")
+        try:
+            data = pickle.dumps(data)
+            logging.info("Arguments for DataWrapper serialized successfully, size: %d bytes", len(data))
+        except Exception as e:
+            logging.exception("Failed to serialize arguments for DataWrapper: %s", str(e))
+            raise ValueError(f"Arguments for builder must be pickle-serializable: {e}") from e
 
     def get(self) -> T:
-        """Get the wrapped value."""
-        return self.value
+        """
+        Could get:
+        1. Itself if skip_unwrap is True.
+        2. The stored value if skip_unwrap is False and value is set.
+        3. The builder function called with args if skip_unwrap is False.
+
+        Returns:
+            T: The unwrapped value.
+        """
+        if self._skip_unwrap:
+            return self
+        if self._builder:
+            return self._builder(**self._args)
+        return self._value
 
 
 def safe_reference_compare(var1, var2) -> bool:
@@ -80,23 +177,6 @@ def safe_reference_compare(var1, var2) -> bool:
 
 class MimicNode(ABC, Generic[T]):
     """A mimic class for various nodes."""
-
-    def __init_subclass__(cls, **kwargs) -> None:
-        """Automatically wrap process method in subclasses."""
-        super().__init_subclass__(**kwargs)
-        # Obtenemos la implementación de _process_impl de la clase hija
-        impl = getattr(cls, "_process_impl", None)
-        # Verificamos que exista y que no sea un método abstracto
-        if impl and not getattr(impl, "__isabstractmethod__", False):
-            # Creamos un wrapper que invoque al process original de la clase base
-            # pero decorado con @wraps(impl) para copiar la firma y docs de _process_impl
-            @wraps(impl)
-            def wrapper(self, *args, **kwargs) -> Any:
-                """Wrapper around MimicNode.process to preserve signature."""
-                return MimicNode.process(self, *args, **kwargs)
-
-            # Reemplazamos el método process en la clase hija con este wrapper
-            cls.process = wrapper
 
     def process_args_dict(self, *args, **kwargs) -> dict[str, Any]:
         """
@@ -179,8 +259,8 @@ class MimicNode(ABC, Generic[T]):
         return func(*args, **filtered_kwargs)
 
     @property
-    def init_args(self) -> dict[str, Any]:
-        """Returns the last arguments used."""
+    def init_args(self) -> CreationDict:
+        """Returns a mutable dictionary of the initialization arguments used."""
         return self._init_args
 
     @init_args.deleter
@@ -213,6 +293,22 @@ class MimicNode(ABC, Generic[T]):
     def save_tensor(self) -> None:
         """Deletes the save tensor function."""
         self._save_tensor = None
+
+    @property
+    def raw_materials(self) -> CreationDict:
+        """Returns a immutable dictionary of the raw materials used."""
+        return copy.deepcopy(self._raw_materials)
+
+    @raw_materials.setter
+    def raw_materials(self, value: CreationDict) -> None:
+        """Sets the raw materials used."""
+        self._raw_materials = copy.deepcopy(value)
+
+    def __new__(cls, *args, **kwargs):
+        instance = super().__new__(cls)
+        # Store raw materials for reconstruction
+        instance._raw_materials = {"args": copy.deepcopy(args), "kwargs": copy.deepcopy(kwargs)}
+        return instance
 
     def __init__(self):
         self._save_tensor: Optional[Callable[[Tensor, str], None]] = None
@@ -360,7 +456,7 @@ def prepare_for_serialization(obj: T, memo: dict[int, Any] | None = None) -> T:
         # contiguous() ensures memory layout is standard for pickle
         res = obj.detach().cpu().clone().contiguous()
         # res.share_memory_()
-        memo[obj_id] = (res,)
+        memo[obj_id] = res
         return res
     if isinstance(obj, dict):
         res = {}
@@ -391,9 +487,9 @@ def prepare_for_serialization(obj: T, memo: dict[int, Any] | None = None) -> T:
 
 def _node_executor_target(
     node_cls: type[MimicNode],
-    node_init_args: dict[str, Any],
+    node_init_args: CreationDict,
     node_exec_args: dict[str, Any],
-    raw_nodes_serialized: dict[str, tuple[type[MimicNode], dict[str, Any]]],
+    raw_nodes_serialized: dict[str, tuple[type[MimicNode], CreationDict]],
     save_call: Optional[Callable[[dict[str, bool | list[str]], Tensor, str], None]],
     save_data: dict[str, bool | list[str]],
     result_queue: mlp.Queue,

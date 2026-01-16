@@ -3,29 +3,24 @@
 import inspect
 import logging
 from functools import partial
-from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional, Tuple, cast, Type
+from typing import Any, Callable, Optional, Tuple, cast
 import torch
 import numpy as np
 from segment_anything.build_sam import Sam
 import comfy.model_management
 from comfy_extras.nodes_sd3 import SkipLayerGuidanceSD3
-from comfy_extras.nodes_images import ResizeAndPadImage
 from comfy_extras.nodes_mask import MaskToImage
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
 from comfy.sd import load_checkpoint_guess_config, VAE, CLIP, load_clip
 from comfy.model_patcher import ModelPatcher
-from comfy.controlnet import load_controlnet
-from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
-from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.open_pose import OpenposeDetector
-from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.canny import CannyDetector
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
 from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader, FaceDetailer
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
-from nodes import ControlNetApplyAdvanced
 import folder_paths
 from PIL import Image
-from json_gui.scripts.mimic import MimicNode
+from json_gui.scripts.mimic import MimicNode, DataWrapper
+
+type Conditional = list[tuple[torch.Tensor, dict[str, Any]]]
 
 
 class Sd3Clip(MimicNode):
@@ -121,49 +116,6 @@ class SkipLayers(MimicNode):
         self.update(layers=layers, scale=scale, start_percent=start_percent, end_percent=end_percent)
 
 
-class ControlNetImgPreprocessor(MimicNode, ABC):
-    """Abstract base class for ControlNet image preprocessors."""
-
-    @property
-    @abstractmethod
-    def controlnet_path(self) -> str:
-        """Returns the ControlNet path."""
-
-    @property
-    def skip(self) -> bool:
-        """Returns whether to skip this preprocessor."""
-        return self._skip
-
-    def tensor(self) -> Any:
-        """Returns the processed tensor."""
-        return self.process()
-
-    # pylint: disable=W0221
-    def _process_impl(self) -> Any:
-        """Processes the image and returns a tensor."""
-        res = self._tensor_impl(self._controlnet_img)
-        if self._save_tensor:
-            self._save_tensor(res)
-        return res
-
-    @abstractmethod
-    def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
-        """Implementation-specific tensor processing."""
-
-    def __init__(self, image_name: str, skip: bool) -> None:
-        """Initializes the ControlNetImgPreprocessor with the given image name."""
-        super().__init__()
-        if type(self) is ControlNetImgPreprocessor:  # pylint: disable=C0123
-            self.update(image_name=image_name, skip=skip)
-
-    # pylint: disable=W0221
-    # pylint: disable=W0201
-    def _update_impl(self, image_name: str, skip: bool) -> None:
-        """Updates the ControlNet image preprocessor."""
-        self._skip = skip
-        self._controlnet_img = self._upload_image(image_name)
-
-
 class SimpleKSampler(MimicNode):
     """A simple KSampler class for demonstration purposes."""
 
@@ -245,52 +197,55 @@ class SimpleKSampler(MimicNode):
         self, latent_image: torch.Tensor, node_model: SkipLayers, cond_pos_cnet: Any, cond_neg_cnet: Any
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """A placeholder method to simulate processing."""
+        try:
+            model, vae = node_model.process(self.use_tune)
 
-        model, vae = node_model.process(self.use_tune)
+            # Prepare noise
+            noisy_latent_image = fix_empty_latent_channels(model, latent_image)
 
-        # Prepare noise
-        noisy_latent_image = fix_empty_latent_channels(model, latent_image)
+            noise = prepare_noise(noisy_latent_image, self._seed, None)
 
-        noise = prepare_noise(noisy_latent_image, self._seed, None)
+            # Safely get sampler arguments
+            sampler_arguments = self._to_dict()
 
-        # Safely get sampler arguments
-        sampler_arguments = self._to_dict()
+            sampler_arguments.update(
+                {
+                    "model": model,
+                    "noise": noise,
+                    "positive": cond_pos_cnet,
+                    "negative": cond_neg_cnet,
+                    "latent_image": noisy_latent_image,
+                    "disable_noise": False,
+                    "start_step": None,
+                    "last_step": None,
+                    "force_full_denoise": False,
+                    "noise_mask": None,
+                    "callback": None,
+                    "disable_pbar": False,
+                }
+            )
 
-        sampler_arguments.update(
-            {
-                "model": model,
-                "noise": noise,
-                "positive": cond_pos_cnet,
-                "negative": cond_neg_cnet,
-                "latent_image": noisy_latent_image,
-                "disable_noise": False,
-                "start_step": None,
-                "last_step": None,
-                "force_full_denoise": False,
-                "noise_mask": None,
-                "callback": None,
-                "disable_pbar": False,
-            }
-        )
+            sampler_signature = inspect.signature(sample)
+            for key in sampler_arguments:
+                if key not in sampler_signature.parameters:
+                    raise ValueError(f"Unexpected argument '{key}' for comfy.sample.sample")
+            logging.info("Decoding...")
+            res: torch.Tensor = sample(**sampler_arguments)
+            images = vae.decode(res.clone())
+            logging.info("VAE Output Shape: %s", images.shape)
 
-        sampler_signature = inspect.signature(sample)
-        for key in sampler_arguments:
-            if key not in sampler_signature.parameters:
-                raise ValueError(f"Unexpected argument '{key}' for comfy.sample.sample")
-        logging.info("Decoding...")
-        res: torch.Tensor = sample(**sampler_arguments)
-        images = vae.decode(res.clone())
-        logging.info("VAE Output Shape: %s", images.shape)
+            # Ensure BHWC (Batch, Height, Width, Channels)
+            if images.shape[1] == 3:
+                images = images.movedim(1, -1)
 
-        # Ensure BHWC (Batch, Height, Width, Channels)
-        if images.shape[1] == 3:
-            images = images.movedim(1, -1)
+            logging.info("Final Image Shape: %s", images.shape)
 
-        logging.info("Final Image Shape: %s", images.shape)
+            self._save_tensor(images, self.key())
 
-        self._save_tensor(images, self.key())
-
-        return res, images
+            return res, images
+        except Exception as e:
+            logging.exception("Error in SimpleKSampler processing: %s", e)
+            raise e
 
 
 class Prompts(MimicNode):
@@ -303,9 +258,7 @@ class Prompts(MimicNode):
 
     @Sd3Clip.use_class_param(lambda inst: {"clip": cast(Sd3Clip, inst).process()})
     # pylint: disable=W0221
-    def _process_impl(
-        self, clip: CLIP
-    ) -> tuple[list[tuple[torch.Tensor, dict[str, Any]]], list[tuple[torch.Tensor, dict[str, Any]]]]:
+    def _process_impl(self, clip: CLIP) -> tuple[DataWrapper[Conditional], DataWrapper[Conditional]]:
         """Encodes the positive and negative prompts using the provided CLIP model."""
         logging.info("Encoding prompts...")
         tokens_pos = clip.tokenize(self._positive)
@@ -317,7 +270,7 @@ class Prompts(MimicNode):
         del tokens_pos
         del tokens_neg
         torch.cuda.empty_cache()
-        return (cond_pos, cond_neg)
+        return tuple(DataWrapper(value=cond, skip_unwrap=False) for cond in (cond_pos, cond_neg))
 
     # pylint: disable=W0221
     # pylint: disable=W0201
@@ -401,245 +354,6 @@ class EmptyLatent(MimicNode):
         self.update(width=width, height=height, batch_size=batch_size, image_name=image_name)
 
 
-class ApplyControlNet(MimicNode):
-    """Returns the ControlNet application parameters."""
-
-    @classmethod
-    def key(cls) -> str:
-        """Returns the key for the ApplyControlNet."""
-        return "apply_control_net"
-
-    @property
-    def target(self) -> ControlNetImgPreprocessor:
-        """Returns the target ControlNet image preprocessor."""
-        return self._target
-
-    @SkipLayers.use_class_param(lambda inst: {"vae": cast(SkipLayers, inst).process(False)[1]})
-    # pylint: disable=W0221
-    def _process_impl(self, cond_pos: Any, cond_neg: Any, vae: Any) -> tuple[Any, Any]:
-        """Returns placeholder conditionals."""
-
-        image_tensor: torch.Tensor = self._target.tensor()
-
-        self._save_tensor(image_tensor, self.target.key())
-
-        logging.info("Loading ControlNet...")
-        controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self._target.controlnet_path)
-        controlnet = load_controlnet(controlnet_full_path)
-
-        res = ControlNetApplyAdvanced().apply_controlnet(
-            cond_pos,
-            cond_neg,
-            controlnet,
-            image_tensor,
-            self._strength,
-            self._start_percentage,
-            self._end_percentage,
-            vae,
-        )
-
-        # Note: Don't delete controlnet here - it's copied into conds and
-        # will be managed by ComfyUI's memory system via load_models_gpu()
-        del image_tensor
-
-        # delete controlnet from conds
-        for cond in res:
-            del cond[0][1]["control"]
-
-        comfy.model_management.soft_empty_cache()
-
-        return res
-
-    # pylint: disable=W0221
-    # pylint: disable=W0201
-    def _update_impl(
-        self,
-        strength: float,
-        start_percentage: float,
-        end_percentage: float,
-        target: Tuple[Type[ControlNetImgPreprocessor], dict[str, Any]],
-    ) -> None:
-        target_cls, target_args = target
-        assert "skip" in target_args, "target_args must include 'skip' key"
-        self._strength = strength
-        self._start_percentage = start_percentage
-        self._end_percentage = end_percentage
-        self._target = target_cls(**target_args) if not target_args.get("skip", False) else None
-
-    def __init__(
-        self,
-        strength: float,
-        start_percentage: float,
-        end_percentage: float,
-        target: Tuple[Type[ControlNetImgPreprocessor], dict[str, Any]],
-    ):
-        super().__init__()
-        self.update(
-            strength=strength,
-            start_percentage=start_percentage,
-            end_percentage=end_percentage,
-            target=target,
-        )
-
-
-class OpenPosePose(ControlNetImgPreprocessor):
-    """A class representing OpenPose pose settings."""
-
-    @classmethod
-    def key(cls) -> str:
-        """Returns the key for the OpenPosePose."""
-        return "openpose_pose"
-
-    @property
-    def controlnet_path(self) -> str:
-        """Returns the ControlNet path."""
-        return self._controlnet_path
-
-    def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
-        """Processes the image tensor using OpenPose preprocessor."""
-        # Free memory before loading OpenPose detector
-        comfy.model_management.soft_empty_cache()
-
-        # Initialize OpenPose Detector
-        openpose_model: OpenposeDetector = OpenposeDetector.from_pretrained().to(
-            comfy.model_management.get_torch_device()
-        )
-
-        # Run preprocessor
-        result = aux_utils.common_annotator_call(
-            lambda image, **kwargs: openpose_model(image, **kwargs)[0],  # noqa: F821
-            cnet_img,
-            include_hand=self._detect_hands,
-            include_face=self._detect_face,
-            include_body=self._detect_body,
-            image_and_json=True,
-            xinsr_stick_scaling=self._scale_stick_for_xinsr_cn,
-            resolution=self._resolution,
-        )
-
-        # Clean up OpenPose model after use
-        del openpose_model
-        comfy.model_management.soft_empty_cache()
-
-        return result
-
-    # pylint: disable=W0221
-    # pylint: disable=W0201
-    def _update_impl(
-        self,
-        image_name: str,
-        detect_body: bool,
-        detect_hands: bool,
-        detect_face: bool,
-        scale_stick_for_xinsr_cn: bool,
-        resolution: int,
-        controlnet_path: str,
-        skip: bool,
-    ) -> None:
-        super()._update_impl(image_name, skip)
-        self._detect_body = detect_body
-        self._detect_hands = detect_hands
-        self._detect_face = detect_face
-        self._scale_stick_for_xinsr_cn = scale_stick_for_xinsr_cn
-        self._resolution = resolution
-        self._controlnet_path = controlnet_path
-
-    def __init__(
-        self,
-        image_name: str,
-        detect_body: bool,
-        detect_hands: bool,
-        detect_face: bool,
-        scale_stick_for_xinsr_cn: bool,
-        resolution: int,
-        controlnet_path: str,
-        skip: bool,
-    ):
-        super().__init__(image_name, skip)
-        self.update(
-            image_name=image_name,
-            detect_body=detect_body,
-            detect_hands=detect_hands,
-            detect_face=detect_face,
-            scale_stick_for_xinsr_cn=scale_stick_for_xinsr_cn,
-            resolution=resolution,
-            controlnet_path=controlnet_path,
-            skip=skip,
-        )
-
-
-class CannyEdge(ControlNetImgPreprocessor):
-    """A class representing Canny edge detector settings."""
-
-    @classmethod
-    def key(cls) -> str:
-        """Returns the key for the CannyEdge."""
-        return "canny_edge"
-
-    @property
-    def controlnet_path(self) -> str:
-        """Returns the ControlNet path."""
-        return self._controlnet_path
-
-    def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
-        """Processes the image tensor using Canny edge detector."""
-        cnet_height, cnet_width = cnet_img.shape[1], cnet_img.shape[2]
-
-        res = aux_utils.common_annotator_call(
-            CannyDetector(),
-            cnet_img,
-            low_threshold=self._low_threshold,
-            high_threshold=self._high_threshold,
-            resolution=self._resolution,
-        )
-        # Resize to match ControlNet input size if needed
-        if (res.shape[2], res.shape[3]) != (cnet_height, cnet_width):
-            res = ResizeAndPadImage().resize_and_pad(
-                res,
-                cnet_width,
-                cnet_height,
-                "white",
-                "lanczos",
-            )[0]
-        return res
-
-    # pylint: disable=W0221
-    # pylint: disable=W0201
-    def _update_impl(
-        self,
-        image_name: str,
-        low_threshold: int,
-        high_threshold: int,
-        resolution: int,
-        controlnet_path: str,
-        skip: bool,
-    ) -> None:
-        super()._update_impl(image_name, skip)
-        self._low_threshold = low_threshold
-        self._high_threshold = high_threshold
-        self._resolution = resolution
-        self._controlnet_path = controlnet_path
-
-    def __init__(
-        self,
-        image_name: str,
-        low_threshold: int,
-        high_threshold: int,
-        resolution: int,
-        controlnet_path: str,
-        skip: bool,
-    ) -> None:
-        super().__init__(image_name, skip)
-        self.update(
-            image_name=image_name,
-            low_threshold=low_threshold,
-            high_threshold=high_threshold,
-            resolution=resolution,
-            controlnet_path=controlnet_path,
-            skip=skip,
-        )
-
-
 class FaceDetailerNode(SimpleKSampler):
     """A class representing face detailer settings."""
 
@@ -692,29 +406,32 @@ class FaceDetailerNode(SimpleKSampler):
         self, input_image: torch.Tensor, positive: Any, negative: Any, node_model: SkipLayers, node_clip: Sd3Clip
     ) -> torch.Tensor:
         """Function to process image once rotated."""
+        try:
+            model, vae = node_model.process(self.use_tune)
+            clip = node_clip.process()
 
-        model, vae = node_model.process(self.use_tune)
-        clip = node_clip.process()
+            # FaceDetailer
+            logging.info("Running FaceDetailer...")
 
-        # FaceDetailer
-        logging.info("Running FaceDetailer...")
+            face_detailer = FaceDetailer()
 
-        face_detailer = FaceDetailer()
+            face_arguments = self.to_dict()
 
-        face_arguments = self.to_dict()
-
-        face_arguments.update(
-            {
-                "model": model,
-                "vae": vae,
-                "clip": clip,
-                "positive": positive,
-                "negative": negative,
-                "image": input_image,
-                "segm_detector_opt": None,  # Not using segm detector here
-                "detailer_hook": None,
-            }
-        )
+            face_arguments.update(
+                {
+                    "model": model,
+                    "vae": vae,
+                    "clip": clip,
+                    "positive": positive,
+                    "negative": negative,
+                    "image": input_image,
+                    "segm_detector_opt": None,  # Not using segm detector here
+                    "detailer_hook": None,
+                }
+            )
+        except Exception as e:
+            logging.exception("Error preparing FaceDetailer arguments: %s", e)
+            raise e
 
         # validate face_arguments keys against FaceDetailer.doit signature would be ideal
         face_signature = inspect.signature(face_detailer.doit)

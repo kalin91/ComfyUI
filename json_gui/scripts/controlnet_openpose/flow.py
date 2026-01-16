@@ -63,6 +63,9 @@ class Flow(AbsFlow):
             dict_arg: dict = cnet.process_args_dict(cond_pos, cond_neg)
             cond_pos, cond_neg = NodeExecutor(cnet, dict_arg, model_raw, self.saved_data).execute(self.save_call)
 
+        cond_pos.skip_unwrap = False
+        cond_neg.skip_unwrap = False
+
         for sampler_idx, current_sampler in enumerate(self.input_model.simple_k_sampler):
             logging.info("Running Sampler %d...", sampler_idx)
             dict_arg: dict = current_sampler.process_args_dict(
