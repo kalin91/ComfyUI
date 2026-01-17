@@ -132,7 +132,7 @@ class ApplyControlNet(MimicNode):
             controlnet.previous_controlnet = next_controlnet
             controlnet = next_controlnet
         cond[0][1]["control"] = first_controlnet
-        ApplyControlNet.CNET_CACHE = copy.copy(first_controlnet)
+        # ApplyControlNet.CNET_CACHE = copy.copy(first_controlnet)
         return cond
 
     # pylint: disable=W0221
