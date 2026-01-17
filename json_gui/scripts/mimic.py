@@ -6,7 +6,7 @@ import logging
 import copy
 import uuid
 from functools import wraps, partial
-from typing import Any, Callable, Literal, Optional, Type, TypeVar, Generic, get_args, TypedDict
+from typing import Any, Callable, Literal, Optional, ParamSpec, Type, TypeVar, Generic, cast, get_args, TypedDict
 from abc import ABC, abstractmethod
 import os
 import signal
@@ -21,6 +21,10 @@ import folder_paths
 from json_gui import p_logger, c_logger
 
 T = TypeVar("T")
+R = TypeVar("R")
+P = ParamSpec("P")
+M = TypeVar("M", bound="MimicNode")
+N = TypeVar("N", bound="MimicNode")  # pylint: disable=C0105
 
 
 class CreationDict(TypedDict):
@@ -175,8 +179,101 @@ def safe_reference_compare(var1, var2) -> bool:
     return var1 is var2
 
 
-class MimicNode(ABC, Generic[T]):
+class MimicNode(ABC, Generic[T, M]):
     """A mimic class for various nodes."""
+
+    class ClassParam(Generic[N, M]):
+        """A class parameter wrapper for MimicNode."""
+        def process(self) -> dict[str, Any]:
+            """Process method to be implemented on first use."""
+            if self._implemented:
+                raise RuntimeError("process method already implemented for this ClassParam.")
+
+            param = self._result_class.key()
+
+            def decorator() -> Callable[P, R]:
+
+                def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                    """Wrapper function."""
+                    if param not in kwargs:
+                        raise TypeError(f"Missing required parameter: {param}")
+                    node: T = kwargs.pop(param)
+                    additional_params: dict[str, Any] = self._processor(node)
+                    kwargs.update(additional_params)
+                    return self._target_func(*args, **kwargs)
+
+                # Register the parameter on the wrapper so _feed_function knows it's allowed
+                wrapper._mimic_extra_params = getattr(  # pylint: disable=W0212
+                    self._target_func, "_mimic_extra_params", set()
+                ) | {  # pylint: disable=W0212
+                    param
+                }
+
+                return wrapper
+
+            self._target.process = decorator()
+            self._implemented = True
+
+        def __new__(cls, *args, **kwargs):
+            # Instance can only be created via MimicNode.build_class_param
+            # through analyzing the caller method.
+            method = inspect.stack()[1].function
+            # Check if called directly from build_class_param
+            if method != "build_class_param":
+                raise TypeError("ClassParam instances can only be created via MimicNode.build_class_param.")
+            return super().__new__(cls)
+
+        def __init__(self, target: Type[N], result_class: Type[M], processor: Callable[[M], dict[str, Any]]) -> None:
+            assert inspect.isclass(target), "target must be a class."
+            assert inspect.isclass(result_class), "result_class must be a class."
+            assert callable(processor), "processor must be a callable."
+            assert issubclass(result_class, MimicNode), "result_class must be a subclass of MimicNode."
+            assert issubclass(target, MimicNode), "target must be a subclass of MimicNode."
+
+            self._target = target
+            self._result_class = result_class
+            self._processor: Callable[[M], dict[str, Any]] = processor
+            self._sign_donator: Callable[P, R] = target._process_impl
+            self._implemented = False
+            self._target_func = target.process if self._is_process_override() else MimicNode.process
+
+        def _is_process_override(self) -> bool:
+            """
+            Checks if the target class has overridden the process method.
+
+            Returns:
+                bool: True if process is overridden, False otherwise.
+            """
+            target_method = self._target.process
+
+            parent_method = MimicNode.process
+            return target_method is not parent_method
+
+    @classmethod
+    def build_class_param(
+        cls: Type[M], result_class: Type[N], processor: Callable[[N], dict[str, Any]]
+    ) -> ClassParam[N, M]:
+        """Returns a class parameter wrapper."""
+        return cls.ClassParam(cls, result_class, processor)
+
+    @classmethod
+    @abstractmethod
+    def _class_param_definitions(cls) -> list[ClassParam[N, M]]:
+        """Defines class parameters for the mimic node."""
+
+    @classmethod
+    def _eject_class_params(cls) -> None:
+        cls_params = cls._class_param_definitions()
+        if not isinstance(cls_params, list):
+            raise TypeError("_class_param_definitions must return a list of ClassParam instances.")
+        for cp in cls_params:
+            cp.process()
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        if not inspect.isabstract(cls):
+            cls._eject_class_params()
+            cls.process = wraps(cls._process_impl)(cls.process)
 
     def process_args_dict(self, *args, **kwargs) -> dict[str, Any]:
         """
@@ -193,34 +290,41 @@ class MimicNode(ABC, Generic[T]):
     def key(cls) -> str:
         """Returns the key for the mimic node."""
 
+    _current_model: Optional[M] = None
+
     @classmethod
-    def use_class_param(
-        cls: Type[T], processor: Callable[[T], dict[str, Any]]
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Decorator to extract a class parameter and process it."""
-        param = cls.key()
+    def _get_current_model(cls, tp: Type[N]) -> N:
+        """Returns the Model mimic node class."""
+        if MimicNode._current_model is None:
+            raise RuntimeError("No current model set for MimicNode.")
+        if not isinstance(MimicNode._current_model, tp):
+            raise TypeError(f"model must be an instance of {tp.__name__}.")
+        return cast(N, MimicNode._current_model)
 
-        def decorator(func) -> Callable:
-            """Decorator function."""
+    @classmethod
+    def _set_current_model(cls, model: M) -> None:
+        """Sets the current Model mimic node class."""
+        if MimicNode._current_model is not None:
+            raise RuntimeError("Current model is already set for MimicNode. Override not allowed.")
+        if not isinstance(model, MimicNode):
+            raise TypeError("model must be an instance of MimicNode.")
+        model.process()
+        MimicNode._current_model = model
 
-            @wraps(func)
-            def wrapper(*args, **kwargs) -> Any:
-                """Wrapper function."""
-                if param not in kwargs:
-                    raise TypeError(f"Missing required parameter: {param}")
-                node: T = kwargs.pop(param)
-                additional_params: dict[str, Any] = processor(node)
-                kwargs.update(additional_params)
-                return func(*args, **kwargs)
+    @classmethod
+    def _has_current_model(cls, t: Type[M]) -> bool:
+        """
 
-            # Register the parameter on the wrapper so _feed_function knows it's allowed
-            wrapper._mimic_extra_params = getattr(func, "_mimic_extra_params", set()) | {  # pylint: disable=W0212
-                param
-            }
+        Args:
+            t (Type[M]): _description_
 
-            return wrapper
-
-        return decorator
+        Returns:
+            bool: _description_
+        """
+        exists: bool = MimicNode._current_model is not None
+        if exists and not isinstance(MimicNode._current_model, t):
+            raise TypeError(f"Current model is not of type {t.__name__}.")
+        return exists
 
     def _unwrap_data_dict(self, *args, **kwargs) -> tuple[list[Any], dict[str, Any]]:
         """Unwraps any DataWrapper instances in the provided dictionary."""
@@ -305,6 +409,9 @@ class MimicNode(ABC, Generic[T]):
         self._raw_materials = copy.deepcopy(value)
 
     def __new__(cls, *args, **kwargs):
+        """
+        Sets raw materials value on instance creation.
+        """
         instance = super().__new__(cls)
         # Store raw materials for reconstruction
         instance._raw_materials = {"args": copy.deepcopy(args), "kwargs": copy.deepcopy(kwargs)}

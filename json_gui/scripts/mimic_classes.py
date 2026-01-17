@@ -26,6 +26,10 @@ type Conditional = list[tuple[torch.Tensor, dict[str, Any]]]
 class Sd3Clip(MimicNode):
     """A class representing SD3 CLIP settings."""
 
+    @classmethod
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "Sd3Clip"]]:
+        return []  # No class params needed for Prompts
+
     CLIP_G_PATH = "sd35m/clip_g.safetensors"
     CLIP_L_PATH = "sd35m/clip_l.safetensors"
     T5_PATH = "sd35m/t5xxl_fp16.safetensors"
@@ -62,14 +66,44 @@ class SkipLayers(MimicNode):
     """A class representing skip layer guidance settings."""
 
     @classmethod
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "SkipLayers"]]:
+        return []  # No class params needed for Prompts
+
+    @classmethod
     def key(cls) -> str:
         """Returns the key for the SkipLayers."""
         return "skip_layers_model"
 
+    @property
+    def vae(self) -> VAE:
+        """Returns the VAE of the model."""
+        if self._vae is None:
+            raise ValueError("Model has not been processed yet. Call process() first.")
+        return self._vae
+
+    @property
+    def model(self) -> ModelPatcher:
+        """Returns the model."""
+        res = self._tunned_model if self.use_tuned else self._base_model
+        if res is None:
+            raise ValueError("Model has not been processed yet. Call process() first.")
+        return res
+
+    @property
+    def use_tuned(self) -> bool:
+        """Returns whether to use the tuned model."""
+        return self._use_tuned
+
+    @use_tuned.setter
+    def use_tuned(self, value: bool) -> None:
+        """Sets whether to use the tuned model."""
+        self._use_tuned = value
+
     CHECKPOINT_PATH = "sd3.5_medium.safetensors"
 
     # pylint: disable=W0221
-    def _process_impl(self, use_tuned: bool) -> Tuple[ModelPatcher, VAE]:
+    # pylint: disable=W0201
+    def _process_impl(self) -> Tuple[ModelPatcher, VAE]:
         """Returns the tuned model."""
         # 1. Load Model and VAE
         logging.info("Loading Checkpoint...")
@@ -79,7 +113,7 @@ class SkipLayers(MimicNode):
         comfy.model_management.soft_empty_cache()
 
         ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", self.CHECKPOINT_PATH)
-        base_model, _a, vae, _b = load_checkpoint_guess_config(
+        self._base_model, _a, self._vae, _b = load_checkpoint_guess_config(
             ckpt_path,
             output_vae=True,
             output_clip=False,
@@ -88,20 +122,20 @@ class SkipLayers(MimicNode):
 
         if self._layers:
             result: tuple = SkipLayerGuidanceSD3.execute(
-                base_model,
+                self._base_model,
                 self._layers,
                 self._scale,
                 self._start_percent,
                 self._end_percent,
             )
-            tunned_model = result[0]
+            self._tunned_model = result[0]
         else:
-            tunned_model = base_model
-        return tunned_model if use_tuned else base_model, vae
+            self._tunned_model = self._base_model
+        return self.model, self._vae
 
-    def process(self, use_tuned: bool = True) -> Tuple[ModelPatcher, VAE]:
+    def process(self) -> Tuple[ModelPatcher, VAE]:
         """Processes and returns the model and VAE."""
-        return super().process(use_tuned)
+        return super().process()
 
     # pylint: disable=W0221
     # pylint: disable=W0201
@@ -110,6 +144,10 @@ class SkipLayers(MimicNode):
         self._scale = scale
         self._start_percent = start_percent
         self._end_percent = end_percent
+        self._vae = None
+        self._use_tuned = False
+        self._base_model = None
+        self._tunned_model = None
 
     def __init__(self, layers: list[int], scale: float, start_percent: float, end_percent: float):
         super().__init__()
@@ -118,6 +156,14 @@ class SkipLayers(MimicNode):
 
 class SimpleKSampler(MimicNode):
     """A simple KSampler class for demonstration purposes."""
+
+    @classmethod
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "SimpleKSampler"]]:
+        res: list[MimicNode.ClassParam[Any, "SimpleKSampler"]] = []
+        res.append(
+            cls.build_class_param(SkipLayers, lambda inst: cls._set_current_model(inst) or {"node_model": inst})
+        )
+        return res
 
     @classmethod
     def key(cls) -> str:
@@ -192,13 +238,14 @@ class SimpleKSampler(MimicNode):
         }
 
     # pylint: disable=W0221
-    @SkipLayers.use_class_param(lambda inst: {"node_model": inst})
     def _process_impl(
         self, latent_image: torch.Tensor, node_model: SkipLayers, cond_pos_cnet: Any, cond_neg_cnet: Any
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """A placeholder method to simulate processing."""
         try:
-            model, vae = node_model.process(self.use_tune)
+            node_model.use_tuned = self.use_tune
+            model = node_model.model
+            vae = node_model.vae
 
             # Prepare noise
             noisy_latent_image = fix_empty_latent_channels(model, latent_image)
@@ -247,19 +294,29 @@ class SimpleKSampler(MimicNode):
             logging.exception("Error in SimpleKSampler processing: %s", e)
             raise e
 
+    def process(
+        self, latent_image: torch.Tensor, node_model: SkipLayers, cond_pos_cnet: Any, cond_neg_cnet: Any
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Processes the latent image and returns the result."""
+        return super().process(latent_image, node_model, cond_pos_cnet, cond_neg_cnet)
+
 
 class Prompts(MimicNode):
     """A class representing positive and negative prompts."""
+
+    @classmethod
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "Prompts"]]:
+        return []  # No class params needed for Prompts
 
     @classmethod
     def key(cls) -> str:
         """Returns the key for the Prompts."""
         return "prompts"
 
-    @Sd3Clip.use_class_param(lambda inst: {"clip": cast(Sd3Clip, inst).process()})
     # pylint: disable=W0221
-    def _process_impl(self, clip: CLIP) -> tuple[DataWrapper[Conditional], DataWrapper[Conditional]]:
+    def _process_impl(self) -> tuple[DataWrapper[Conditional], DataWrapper[Conditional]]:
         """Encodes the positive and negative prompts using the provided CLIP model."""
+        clip: CLIP = Sd3Clip().process()
         logging.info("Encoding prompts...")
         tokens_pos = clip.tokenize(self._positive)
         cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)
@@ -271,6 +328,10 @@ class Prompts(MimicNode):
         del tokens_neg
         torch.cuda.empty_cache()
         return tuple(DataWrapper(value=cond, skip_unwrap=False) for cond in (cond_pos, cond_neg))
+
+    def process(self) -> tuple[DataWrapper[Conditional], DataWrapper[Conditional]]:
+        """Processes the prompts using the provided CLIP model."""
+        return super().process()
 
     # pylint: disable=W0221
     # pylint: disable=W0201
@@ -287,6 +348,16 @@ class EmptyLatent(MimicNode):
     """An empty latent class for placeholder purposes."""
 
     @classmethod
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "EmptyLatent"]]:
+        res: list[MimicNode.ClassParam[Any, "EmptyLatent"]] = []
+        res.append(
+            cls.build_class_param(
+                SkipLayers, lambda inst: cls._set_current_model(inst) or {"vae": cast(SkipLayers, inst).process()[1]}
+            )
+        )
+        return res
+
+    @classmethod
     def key(cls) -> str:
         """Returns the key for the EmptyLatent."""
         return "empty_latent"
@@ -296,7 +367,6 @@ class EmptyLatent(MimicNode):
         """Returns the starting image tensor, if any."""
         return self._start_img
 
-    @SkipLayers.use_class_param(lambda inst: {"vae": cast(SkipLayers, inst).process(False)[1]})
     # pylint: disable=W0221
     def _process_impl(self, vae: VAE) -> torch.Tensor:
         """Generates and returns an empty latent tensor."""
@@ -342,6 +412,11 @@ class EmptyLatent(MimicNode):
         )
 
     # pylint: disable=W0221
+    def process(self, vae: VAE) -> torch.Tensor:
+        """Generates and returns an empty latent tensor."""
+        return super().process(vae)
+
+    # pylint: disable=W0221
     # pylint: disable=W0201
     def _update_impl(self, width: int, height: int, batch_size: int, image_name: Optional[str]) -> None:
         self._width = width
@@ -356,6 +431,16 @@ class EmptyLatent(MimicNode):
 
 class FaceDetailerNode(SimpleKSampler):
     """A class representing face detailer settings."""
+
+    @classmethod
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "FaceDetailerNode"]]:
+        res: list[MimicNode.ClassParam[Any, "FaceDetailerNode"]] = []
+        res.append(
+            cls.build_class_param(
+                SkipLayers, lambda inst: cls._set_current_model(inst) or {"node_model": inst, "node_clip": Sd3Clip()}
+            )
+        )
+        return res
 
     @classmethod
     def key(cls) -> str:
@@ -400,14 +485,15 @@ class FaceDetailerNode(SimpleKSampler):
         )
         return base_dict
 
-    @SkipLayers.use_class_param(lambda inst: {"node_model": inst, "node_clip": Sd3Clip()})
     # pylint: disable=W0221
     def _process_impl(
         self, input_image: torch.Tensor, positive: Any, negative: Any, node_model: SkipLayers, node_clip: Sd3Clip
     ) -> torch.Tensor:
         """Function to process image once rotated."""
         try:
-            model, vae = node_model.process(self.use_tune)
+            node_model.use_tuned = self.use_tune
+            model = node_model.model
+            vae = node_model.vae
             clip = node_clip.process()
 
             # FaceDetailer
@@ -448,6 +534,13 @@ class FaceDetailerNode(SimpleKSampler):
             mask_img_tensor: tuple = MaskToImage().execute(mask).result[0]  # pylint: disable=E1136
             self._save_tensor(mask_img_tensor, "face-mask")
         return result_images
+
+    # pylint: disable=W0221
+    def process(
+        self, input_image: torch.Tensor, positive: Any, negative: Any, node_model: SkipLayers, node_clip: Sd3Clip
+    ) -> torch.Tensor:
+        """Processes the image using the FaceDetailer."""
+        return MimicNode.process(self, input_image, positive, negative, node_model, node_clip)
 
     # pylint: disable=W0221
     # pylint: disable=W0201
@@ -576,6 +669,10 @@ class FaceDetailerNode(SimpleKSampler):
 
 class Rotator(MimicNode):
     """A class representing image rotation settings."""
+
+    @classmethod
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "Rotator"]]:
+        return []  # No class params needed for Prompts
 
     @classmethod
     def key(cls) -> str:

@@ -13,28 +13,54 @@ logger = logging.getLogger()
 if logger.hasHandlers():
     logger.handlers.clear()
 
+PATTERN = r'(^\s*File\s+)"(.*)", line (\d+), in (.*)$'
+
+
+class PrettyTracebackFormatter(logging.Formatter):
+    """Custom formatter to prettify exception tracebacks."""
+
+    def formatException(self, ei) -> str:
+        """Formats exception tracebacks for better readability."""
+        tb = super().formatException(ei)
+        lines = tb.splitlines()
+        out = []
+
+        for line in lines:
+            match = re.match(PATTERN, line)
+            if match:
+                pre_text = match.group(1)
+                filename = match.group(2)
+                lineno = match.group(3)
+                funcname = match.group(4)
+                out.append(f'{pre_text}"{filename}:{lineno}" in {funcname}')
+            else:
+                out.append(line)
+
+        return "\n".join(out)
+
 
 class ErrorFilter(logging.Filter):
     """Allows only ERROR and CRITICAL levels."""
 
     def filter(self, record) -> bool:
         if "Traceback (most recent call last):" in record.getMessage():
+
             def split_traceback_lines(msg: str) -> str:
                 """Splits traceback lines to improve readability."""
                 msg_lines = msg.splitlines()
                 message_lines = []
                 for line in msg_lines:
-                    pattern = r'(^\s*File\s+)"(.*)", line (\d+), in (.*)$'
-                    match = re.match(pattern, line, re.MULTILINE)
+                    match = re.match(PATTERN, line, re.MULTILINE)
                     if match:
                         pre_text = match.group(1)
                         filename = match.group(2)
                         lineno = match.group(3)
                         funcname = match.group(4)
-                        message_lines.append(f"{pre_text}\"{filename}:{lineno}\" in {funcname}")
+                        message_lines.append(f'{pre_text}"{filename}:{lineno}" in {funcname}')
                     else:
                         message_lines.append(line)
                 return "\n".join(message_lines)
+
             try:
                 record.msg = split_traceback_lines(record.getMessage())
                 if hasattr(record, "message"):
@@ -77,14 +103,15 @@ def setup_logger(
 
     error_format = "%(asctime)25s  [%(levelname)-8s] %(filename)25s:%(funcName)-30s:%(lineno)-5d  %(message)s"
 
-    default_format = error_format
+    default_format = "%(asctime)25s  [%(levelname)-8s] %(filename)25s:%(funcName)-30s:%(lineno)-5d  %(message)s"
 
     formatter = logging.Formatter(default_format)
+    error_formatter = PrettyTracebackFormatter(error_format)
 
     # Always log errors
     error_handler = logging.StreamHandler(sys.stderr)
     error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(formatter)
+    error_handler.setFormatter(error_formatter)
     error_handler.addFilter(ErrorFilter())
     logger.addHandler(error_handler)
 
@@ -104,7 +131,7 @@ def setup_logger(
 
 
 setup_logger(level=args.verbose, use_stdout=args.log_stdout)
-
+logging.info("Logger initialized for parent process.")
 # Use spawn context to avoid CUDA fork issues
 MP_CONTEXT: SpawnContext = mlp.get_context("spawn")
 

@@ -45,10 +45,9 @@ class Flow(AbsFlow):
         self.input_model: Model = steps
 
         prms_node = self.input_model.prompts
-        sd_clip = self._input_model.clip
-        clip_raw = {sd_clip.__class__: sd_clip.init_args}
+
         # Encode Prompts
-        cond_pos, cond_neg = NodeExecutor(prms_node, {}, clip_raw, self.saved_data).execute(self.save_call)
+        cond_pos, cond_neg = NodeExecutor(prms_node, {}, {}, self.saved_data).execute(self.save_call)
 
         sd_model = self.input_model.skip_layers_model
         model_raw: dict[type, dict] = {sd_model.__class__: sd_model.init_args}

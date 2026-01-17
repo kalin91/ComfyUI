@@ -5,7 +5,7 @@ import pickle
 import copy
 import logging
 from collections import Counter
-from typing import Any, Tuple, Type, Union
+from typing import Any, Optional, Tuple, Type, Union
 import torch
 from comfy_extras.nodes_images import ResizeAndPadImage
 from nodes import ControlNetApplyAdvanced
@@ -15,7 +15,7 @@ from comfy.controlnet import load_controlnet, ControlNet
 from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.open_pose import OpenposeDetector
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.canny import CannyDetector
-from json_gui.scripts.mimic import CreationDict, MimicNode, DataWrapper
+from json_gui.scripts.mimic import MimicNode, DataWrapper
 from json_gui.scripts.mimic_classes import SkipLayers, Conditional
 import folder_paths
 
@@ -67,6 +67,12 @@ class ApplyControlNet(MimicNode):
     """Returns the ControlNet application parameters."""
 
     @classmethod
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "ApplyControlNet"]]:
+        res: list[MimicNode.ClassParam[Any, "ApplyControlNet"]] = []
+        res.append(cls.build_class_param(SkipLayers, lambda inst: cls._set_current_model(inst) or {"model": inst}))
+        return res
+
+    @classmethod
     def key(cls) -> str:
         """Returns the key for the ApplyControlNet."""
         return "apply_control_net"
@@ -76,9 +82,11 @@ class ApplyControlNet(MimicNode):
         """Returns the target ControlNet image preprocessor."""
         return self._target
 
+    CNET_CACHE: Optional[ControlNet] = None
+
     @staticmethod
     def _data_wrapper_call(
-        controlnet_paths: list[str], cond: Conditional, raw_model: CreationDict, cnet_attrs: list[dict[str, Any]]
+        controlnet_paths: list[str], cond: Conditional, cnet_attrs: list[dict[str, Any]]
     ) -> DataWrapper[Conditional]:
         """
         Applies the ControlNet model to the given conditional.
@@ -86,35 +94,47 @@ class ApplyControlNet(MimicNode):
         Args:
             controlnet_paths (list[str]): The paths to the ControlNet models.
             cond (Conditional): The conditional to apply the ControlNet to.
-            raw_model (CreationDict): The raw model creation dictionary.
             cnet_attrs (list[dict[str, Any]]): The list of ControlNet attributes to set.
 
         Returns:
             DataWrapper: A DataWrapper containing the updated conditional with the ControlNet applied.
         """
-        raw_model = copy.deepcopy(raw_model)
         if len(controlnet_paths) != len(cnet_attrs):
             raise ValueError("Number of controlnet paths must match number of condition hints.")
-        vae: VAE = SkipLayers(*raw_model["args"], **raw_model["kwargs"]).process(False)[1]
+
+        vae: VAE = ApplyControlNet._get_current_model(SkipLayers).vae
         controlnet_paths = copy.deepcopy(controlnet_paths)
         cnet_attrs = copy.deepcopy(cnet_attrs)
+        controlnet: ControlNet
         controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", controlnet_paths.pop(0))
-        controlnet: ControlNet = load_controlnet(controlnet_full_path)
-        controlnet.vae = vae
-        for k, v in cnet_attrs.pop(0).items():
-            setattr(controlnet, k, v)
-        cond[0][1]["control"] = controlnet
+        if ApplyControlNet.CNET_CACHE is not None:
+            controlnet = copy.copy(ApplyControlNet.CNET_CACHE)
+            for k, v in ((k, v) for k, v in vars(controlnet).items() if isinstance(v, torch.Tensor)):
+                setattr(controlnet, k, v.clone())
+        else:
+            controlnet = load_controlnet(controlnet_full_path)
+            # ApplyControlNet.CNET_CACHE = controlnet
+            controlnet.vae = vae
+            for k, v in cnet_attrs.pop(0).items():
+                setattr(controlnet, k, v)
+        first_controlnet = controlnet
         for path in controlnet_paths:
             controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", path)
-            next_controlnet: ControlNet = load_controlnet(controlnet_full_path)
-            next_controlnet.vae = vae
+            if ApplyControlNet.CNET_CACHE is not None:
+                next_controlnet = copy.copy(controlnet.previous_controlnet)
+                for k, v in ((k, v) for k, v in vars(next_controlnet).items() if isinstance(v, torch.Tensor)):
+                    setattr(next_controlnet, k, v.clone())
+            else:
+                next_controlnet: ControlNet = load_controlnet(controlnet_full_path)
+                next_controlnet.vae = vae
             for k, v in cnet_attrs.pop(0).items():
                 setattr(next_controlnet, k, v)
             controlnet.previous_controlnet = next_controlnet
             controlnet = next_controlnet
+        cond[0][1]["control"] = first_controlnet
+        ApplyControlNet.CNET_CACHE = copy.copy(first_controlnet)
         return cond
 
-    @SkipLayers.use_class_param(lambda inst: {"model": inst})
     # pylint: disable=W0221
     def _process_impl(
         self,
@@ -123,17 +143,17 @@ class ApplyControlNet(MimicNode):
         model: SkipLayers,
     ) -> tuple[DataWrapper[Conditional], DataWrapper[Conditional]]:
         """
-        Applies the ControlNet to the given conditionals.
+        Applies the ControlNet model to the given positive and negative conditionals.
 
         Args:
             cond_pos (Union[DataWrapper[Any], Any]): The positive conditional.
             cond_neg (Union[DataWrapper[Any], Any]): The negative conditional.
-            vae (VAE): The VAE instance used for encoding.
+            model (SkipLayers): The model to use for processing.
 
         Returns:
             tuple[DataWrapper[Any], DataWrapper[Any]]: The updated conditionals wrapped in DataWrapper instances.
         """
-        vae: VAE = model.process(False)[1]
+        vae: VAE = model.vae
         assert type(cond_pos) is type(cond_neg), "cond_pos and cond_neg must be of the same type"
         control_nets: list[str] = [self._target.controlnet_path]
         cnet_attrs_pos: list[torch.Tensor] = []
@@ -166,6 +186,26 @@ class ApplyControlNet(MimicNode):
             self._start_percentage,
             self._end_percentage,
             vae,
+        )
+
+        main_compare = compare_instance_attributes(conds[0][0][1]["control"], conds[1][0][1]["control"])
+        similar_main = {k: v for k, v in main_compare.items() if v[2]}
+        diffs_main = {k: v for k, v in main_compare.items() if not v[2]}
+        if conds[0][0][1]["control"].previous_controlnet and conds[1][0][1]["control"].previous_controlnet:
+            main_prev = compare_instance_attributes(
+                conds[0][0][1]["control"].previous_controlnet, conds[1][0][1]["control"].previous_controlnet
+            )
+            similar_prev = {k: v for k, v in main_prev.items() if v[2]}
+            diffs_prev = {k: v for k, v in main_prev.items() if not v[2]}
+            logging.info(
+                "ControlNet previous_controlnet similar attributes (%s): %s",
+                len(similar_prev),
+                similar_prev.keys(),
+            )
+        logging.info(
+            "ControlNet main similar attributes (%s): %s",
+            len(similar_main),
+            similar_main.keys(),
         )
 
         conds = ((conds[0], cnet_attrs_pos), (conds[1], cnet_attrs_neg))
@@ -218,7 +258,6 @@ class ApplyControlNet(MimicNode):
                 args={
                     "controlnet_paths": control_nets,
                     "cond": cond,
-                    "raw_model": model.raw_materials,
                     "cnet_attrs": cnet_attrs,
                 },
                 skip_unwrap=True,
@@ -227,6 +266,14 @@ class ApplyControlNet(MimicNode):
         res = tuple(update_cond(*c) for c in conds)
 
         return res
+
+    def process(
+        self,
+        cond_pos: Union[DataWrapper[Conditional], Conditional],
+        cond_neg: Union[DataWrapper[Conditional], Conditional],
+        model: SkipLayers,
+    ) -> tuple[DataWrapper[Conditional], DataWrapper[Conditional]]:
+        return super().process(cond_pos, cond_neg, model)
 
     # pylint: disable=W0221
     # pylint: disable=W0201
@@ -280,13 +327,22 @@ def compare_instance_attributes(instance_a: Any, instance_b: Any) -> dict[str, t
         val_b = attrs_b.get(attr, None)
         attr_type_a = type(val_a) if attr in attrs_a else type(val_b)
         attr_type_b = type(val_b) if attr in attrs_b else type(val_a)
-        result[attr] = (attr_type_a, attr_type_b, val_a == val_b)
+        bol: bool
+        if attr_type_a is attr_type_b and attr_type_a is torch.Tensor:
+            bol = (val_a == val_b).all()
+        else:
+            bol = val_a == val_b
+        result[attr] = (attr_type_a, attr_type_b, bol)
 
     return result
 
 
 class OpenPosePose(ControlNetImgPreprocessor):
     """A class representing OpenPose pose settings."""
+
+    @classmethod
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "OpenPosePose"]]:
+        return []  # No class params needed for Prompts
 
     @classmethod
     def key(cls) -> str:
@@ -371,6 +427,10 @@ class OpenPosePose(ControlNetImgPreprocessor):
 
 class CannyEdge(ControlNetImgPreprocessor):
     """A class representing Canny edge detector settings."""
+
+    @classmethod
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "CannyEdge"]]:
+        return []  # No class params needed for Prompts
 
     @classmethod
     def key(cls) -> str:
