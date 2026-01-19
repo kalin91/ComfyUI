@@ -5,7 +5,7 @@ import pickle
 import copy
 import logging
 from collections import Counter
-from typing import Any, Optional, Tuple, Type, Union
+from typing import Any, Generic, Optional, Tuple, Type, TypeVar, Union
 import torch
 from comfy_extras.nodes_images import ResizeAndPadImage
 from nodes import ControlNetApplyAdvanced
@@ -19,8 +19,11 @@ from json_gui.scripts.mimic import MimicNode, DataWrapper
 from json_gui.scripts.mimic_classes import SkipLayers, Conditional
 import folder_paths
 
+T = TypeVar("T")
+M = TypeVar("M", bound=MimicNode)
 
-class ControlNetImgPreprocessor(MimicNode, ABC):
+
+class ControlNetImgPreprocessor(Generic[T, M], MimicNode[T, M], ABC):
     """Abstract base class for ControlNet image preprocessors."""
 
     @property
@@ -33,12 +36,12 @@ class ControlNetImgPreprocessor(MimicNode, ABC):
         """Returns whether to skip this preprocessor."""
         return self._skip
 
-    def tensor(self) -> Any:
+    def tensor(self) -> T:
         """Returns the processed tensor."""
         return self.process()
 
     # pylint: disable=W0221
-    def _process_impl(self) -> Any:
+    def _process_impl(self) -> T:
         """Processes the image and returns a tensor."""
         res = self._tensor_impl(self._controlnet_img)
         if self._save_tensor:
@@ -46,7 +49,7 @@ class ControlNetImgPreprocessor(MimicNode, ABC):
         return res
 
     @abstractmethod
-    def _tensor_impl(self, cnet_img: torch.Tensor) -> torch.Tensor:
+    def _tensor_impl(self, cnet_img: torch.Tensor) -> T:
         """Implementation-specific tensor processing."""
 
     def __init__(self, image_name: str, skip: bool) -> None:
@@ -63,7 +66,7 @@ class ControlNetImgPreprocessor(MimicNode, ABC):
         self._controlnet_img = self._upload_image(image_name)
 
 
-class ApplyControlNet(MimicNode):
+class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Conditional]], "ApplyControlNet"]):
     """Returns the ControlNet application parameters."""
 
     @classmethod
@@ -80,6 +83,8 @@ class ApplyControlNet(MimicNode):
     @property
     def target(self) -> ControlNetImgPreprocessor:
         """Returns the target ControlNet image preprocessor."""
+        if self._target is None:
+            raise ValueError("Target ControlNet image preprocessor is not set.")
         return self._target
 
     CNET_CACHE: Optional[ControlNet] = None
@@ -120,12 +125,13 @@ class ApplyControlNet(MimicNode):
         first_controlnet = controlnet
         for path in controlnet_paths:
             controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", path)
+            next_controlnet: ControlNet
             if ApplyControlNet.CNET_CACHE is not None:
                 next_controlnet = copy.copy(controlnet.previous_controlnet)
                 for k, v in ((k, v) for k, v in vars(next_controlnet).items() if isinstance(v, torch.Tensor)):
                     setattr(next_controlnet, k, v.clone())
             else:
-                next_controlnet: ControlNet = load_controlnet(controlnet_full_path)
+                next_controlnet = load_controlnet(controlnet_full_path)
                 next_controlnet.vae = vae
             for k, v in cnet_attrs.pop(0).items():
                 setattr(next_controlnet, k, v)
@@ -155,7 +161,7 @@ class ApplyControlNet(MimicNode):
         """
         vae: VAE = model.vae
         assert type(cond_pos) is type(cond_neg), "cond_pos and cond_neg must be of the same type"
-        control_nets: list[str] = [self._target.controlnet_path]
+        control_nets: list[str] = [self.target.controlnet_path]
         cnet_attrs_pos: list[torch.Tensor] = []
         cnet_attrs_neg: list[torch.Tensor] = []
         if isinstance(cond_pos, DataWrapper):
@@ -169,12 +175,12 @@ class ApplyControlNet(MimicNode):
             cond_neg.skip_unwrap = False
             cond_neg = cond_neg.get()
 
-        image_tensor: torch.Tensor = self._target.tensor()
+        image_tensor: torch.Tensor = self.target.tensor()
 
         self._save_tensor(image_tensor, self.target.key())
 
         logging.info("Loading ControlNet...")
-        controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self._target.controlnet_path)
+        controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self.target.controlnet_path)
         controlnet: ControlNet = load_controlnet(controlnet_full_path)
 
         conds = ControlNetApplyAdvanced().apply_controlnet(
@@ -267,14 +273,6 @@ class ApplyControlNet(MimicNode):
 
         return res
 
-    def process(
-        self,
-        cond_pos: Union[DataWrapper[Conditional], Conditional],
-        cond_neg: Union[DataWrapper[Conditional], Conditional],
-        model: SkipLayers,
-    ) -> tuple[DataWrapper[Conditional], DataWrapper[Conditional]]:
-        return super().process(cond_pos, cond_neg, model)
-
     # pylint: disable=W0221
     # pylint: disable=W0201
     def _update_impl(
@@ -337,7 +335,7 @@ def compare_instance_attributes(instance_a: Any, instance_b: Any) -> dict[str, t
     return result
 
 
-class OpenPosePose(ControlNetImgPreprocessor):
+class OpenPosePose(ControlNetImgPreprocessor[torch.Tensor, "OpenPosePose"]):
     """A class representing OpenPose pose settings."""
 
     @classmethod
@@ -380,9 +378,8 @@ class OpenPosePose(ControlNetImgPreprocessor):
 
         return result
 
-    # pylint: disable=W0221
-    # pylint: disable=W0201
-    def _update_impl(
+    # pylint: disable=W0221, W0201
+    def _update_impl(  # type: ignore[override]
         self,
         image_name: str,
         detect_body: bool,
@@ -425,7 +422,7 @@ class OpenPosePose(ControlNetImgPreprocessor):
         )
 
 
-class CannyEdge(ControlNetImgPreprocessor):
+class CannyEdge(ControlNetImgPreprocessor[torch.Tensor, "CannyEdge"]):
     """A class representing Canny edge detector settings."""
 
     @classmethod
@@ -466,7 +463,7 @@ class CannyEdge(ControlNetImgPreprocessor):
 
     # pylint: disable=W0221
     # pylint: disable=W0201
-    def _update_impl(
+    def _update_impl(  # type: ignore[override]
         self,
         image_name: str,
         low_threshold: int,

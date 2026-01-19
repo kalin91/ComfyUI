@@ -18,11 +18,15 @@ from json_gui.json_manager.scroll_utils import bind_frame_scroll_events
 from json_gui.json_manager.image_viewer import ImageViewer
 from json_gui.json_manager import loading_modal
 from json_gui import p_logger, utils as gui_utils
+from json_gui.typedicts import BodyDict, is_bodydict
 import comfy.model_management
 
 
 class JSONManagerApp:
     """Main application class."""
+
+    _flow_body: Optional[BodyDict]
+    _flow_inst: Optional[gui_utils.AbsFlow] = None
 
     # Update scrollregion and frame width when content or canvas changes
     def _update_actions_scrollregion(
@@ -52,7 +56,7 @@ class JSONManagerApp:
         """Set the flow callable and validate its signature."""
         if value is None:
             self._flow = None
-            self._flow_inst = None
+            del self.flow_inst
             return
         # Validate that value is an instance of AbsFlow
         assert issubclass(value, gui_utils.AbsFlow), "flow must be an instance of AbsFlow"
@@ -81,27 +85,14 @@ class JSONManagerApp:
         self._cleanup_vram()
 
     @property
-    def flow_body(self) -> Optional[dict[str, Any]]:
+    def flow_body(self) -> Optional[BodyDict]:
         """Get the flow body from the current JSON data."""
         return self._flow_body
 
     @flow_body.setter
-    def flow_body(self, filename: str) -> None:
+    def flow_body(self, value: BodyDict) -> None:
         """Set the flow body."""
-        if filename is None:
-            self._flow_body = None
-            return
-
-        assert os.path.isfile(filename), f"{filename} is not a valid file"
-        # Load YAML file
-        with open(filename, "r", encoding="utf-8") as f:
-            value: dict[str, Any] = yaml.safe_load(f)
-
-        # Validate
-        assert value is not None, "flow_body cannot be None"
-        assert isinstance(value, dict), "flow_body must be a dictionary"
-        assert "props" in value, "flow_body must contain 'props' key"
-
+        assert is_bodydict(value), "flow_body must conform to BodyDict structure"
         self._flow_body = value
 
     @flow_body.deleter
@@ -109,9 +100,27 @@ class JSONManagerApp:
         """Delete the flow body."""
         self._flow_body = None
 
+    def set_flow_body(self, filename: str) -> None:
+        """
+        Set the flow body by loading it from a YAML file.
+
+        Args:
+            filename (str): Path to the YAML file containing the flow body.
+        """
+        if filename is None:
+            self._flow_body = None
+            return
+
+        assert os.path.isfile(filename), f"{filename} is not a valid file"
+        # Load YAML file
+        with open(filename, "r", encoding="utf-8") as f:
+            value: Optional[dict[str, Any]] = yaml.safe_load(f)
+
+        self.flow_body = value
+
     def __init__(self, root: tk.Tk):
         self._flow = None
-        self._flow_inst: Optional[gui_utils.AbsFlow] = None
+        self._flow_body: Optional[BodyDict] = None
         self._has_changes = False
         self.root = root
         self.root.title("JSON Configuration Manager")
@@ -268,7 +277,7 @@ class JSONManagerApp:
                 steps_entry.set(1)
 
         self.steps_var.trace_add("read", steps_trace_callback)
-        steps_entry.config(textvariable=self.steps_var)
+        steps_entry.config(textvariable=self.steps_var)  # type: ignore[has-type]
         self.image_viewer = ImageViewer(viewer_frame)
         self.image_viewer.pack(side="top", fill="both", expand=True)
         paned.add(viewer_frame, weight=1)
@@ -438,7 +447,11 @@ class JSONManagerApp:
                 # verify that the script has a main function
                 module_path = Path(flow)
                 spec = spec_from_file_location(module_path.stem, flow)
+                if not spec:
+                    raise ModuleNotFoundError(f"Could not load spec for module {module_path.stem}")
                 module = module_from_spec(spec)
+                if not spec.loader:
+                    raise ModuleNotFoundError(f"Could not load module {module_path.stem}")
                 spec.loader.exec_module(module)
                 assert hasattr(module, "Flow"), f"Script {flow} does not have a main function"
                 self.flow = getattr(module, "Flow")
@@ -447,7 +460,7 @@ class JSONManagerApp:
             assert self.flow is not None, "Flow function is not set after loading script"
 
             # Set flow body
-            self.flow_body = body
+            self.set_flow_body(body)
 
             # Clear previous data
             self.json_editor.load_data({}, {"props": {}})
@@ -614,23 +627,29 @@ class JSONManagerApp:
             logging.exception("Execution failed")
             raise e
 
-        self.status_var.set(f"Executing with {self.flow_inst.file_path}...")
+        inst = self.flow_inst
+        if inst is None:
+            raise RuntimeError("Flow instance is not set")
+
+        self.status_var.set(f"Executing with {inst.file_path}...")
         self.root.update()
 
         def run_flow_direct() -> None:
             """Run the flow directly in this process."""
             try:
-                assert self.flow_inst is not None, "Flow instance is not set"
+                inst = self.flow_inst
+
+                assert inst is not None, "Flow instance is not set"
 
                 logging.info(
                     "Executing flow: script=%s, folder=%s, file=%s, steps=%s",
                     foldername,
                     foldername,
-                    self.flow_inst.file_path,
+                    inst.file_path,
                     steps,
                 )
 
-                image_paths = self.flow_inst.run(steps)
+                image_paths = inst.run(steps)
                 # Clean up after execution
                 self._cleanup_vram()
 
@@ -650,7 +669,7 @@ class JSONManagerApp:
                 logging.error("Memory error: %s", error_msg)
                 self.root.after(
                     0,
-                    lambda msg=error_msg: messagebox.showerror(
+                    lambda msg=error_msg: messagebox.showerror(  # type: ignore
                         "Memory Error", f"{msg}\n\nPlease close and reopen the application."
                     ),
                 )
@@ -660,7 +679,7 @@ class JSONManagerApp:
             self.root,
             run_flow_direct,
             (),
-            f"Executing Flow {foldername}: {self.flow_inst.file_path}...",
+            f"Executing Flow {foldername}: {inst.file_path}...",
             True,
             p_logger.poll_log_queue,
         )
@@ -927,7 +946,10 @@ HEALTH INDICATORS:
             ttk.Button(
                 btn_frame,
                 text="Clean Memory",
-                command=lambda: [self._cleanup_vram(), self._refresh_memory_window(text_widget)],
+                command=lambda: [
+                    self._cleanup_vram(),  # type: ignore[func-returns-value]
+                    self._refresh_memory_window(text_widget),  # type: ignore[func-returns-value]
+                ],
             ).pack(side="left", padx=5)
 
             ttk.Button(btn_frame, text="Close", command=detail_window.destroy).pack(side="right", padx=5)

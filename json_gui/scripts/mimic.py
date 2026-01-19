@@ -6,7 +6,7 @@ import logging
 import copy
 import uuid
 from functools import wraps, partial
-from typing import Any, Callable, Literal, Optional, ParamSpec, Type, TypeVar, Generic, cast, get_args, TypedDict
+from typing import Any, Callable, Literal, Optional, ParamSpec, Type, TypeVar, Generic, cast, get_args, final
 from abc import ABC, abstractmethod
 import os
 import signal
@@ -16,22 +16,18 @@ import numpy as np
 import torch
 from torch import Tensor, multiprocessing as mlp
 from PIL import Image, ImageOps, ImageSequence
+from json_gui.typedicts import EMPTY_CREATION_DICT, CreationDict, SavedImagesDict
+from json_gui import p_logger, c_logger
+from json_gui.utils import EndOfFlowException
 import node_helpers
 import folder_paths
-from json_gui import p_logger, c_logger
 
 T = TypeVar("T")
 R = TypeVar("R")
 P = ParamSpec("P")
+Q = TypeVar("Q", bound="NodeExecutor")
 M = TypeVar("M", bound="MimicNode")
 N = TypeVar("N", bound="MimicNode")  # pylint: disable=C0105
-
-
-class CreationDict(TypedDict):
-    """Dictionary for expressing creation arguments."""
-
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
 
 
 class DataWrapper(Generic[T]):
@@ -167,14 +163,18 @@ def safe_reference_compare(var1, var2) -> bool:
     if isinstance(var1, DataWrapper):
         return var1.identifier == var2.identifier
 
-    # 2. For basic types, compare by value
+    # 2. For torch.Tensor, compare by content
+    if isinstance(var1, torch.Tensor) and isinstance(var2, torch.Tensor):
+        return torch.equal(var1, var2)
+
+    # 3. For basic types, compare by value
     optimizable_types = (int, str, float, bool, tuple, bytes, type(None))
 
     if isinstance(var1, optimizable_types):
         # assuming their __eq__ methods are standard and safe.
         return var1 == var2
 
-    # 3. For EVERYTHING else (lists, dicts, your own classes, etc.)
+    # 4. For EVERYTHING else (lists, dicts, your own classes, etc.)
     # we use 'is' to avoid triggering custom or slow __eq__ methods.
     return var1 is var2
 
@@ -182,8 +182,168 @@ def safe_reference_compare(var1, var2) -> bool:
 class MimicNode(ABC, Generic[T, M]):
     """A mimic class for various nodes."""
 
+    _node_executor_factory: Optional["NodeExecutorFactory"] = None
+
+    class NodeExecutorFactory(Generic[Q]):
+        """Factory class to create NodeExecutor instances."""
+
+        @property
+        def save_call(self) -> Callable[[SavedImagesDict, Tensor, str], None]:
+            """Returns the save call function."""
+            return self._save_call
+
+        @property
+        def copy_call(self) -> Optional[Callable[[SavedImagesDict], None]]:
+            """Returns the copy call function."""
+            return self._copy_call
+
+        @property
+        def save_data(self) -> SavedImagesDict:
+            """Returns the save data dictionary."""
+            return self._save_data
+
+        def __init__(
+            self,
+            node_executor_cls: Type[Q],
+            save_data: SavedImagesDict,
+            save_call: Callable[[SavedImagesDict, Tensor, str], None],
+            copy_call: Optional[Callable[[SavedImagesDict], None]] = None,
+        ) -> None:
+            self._node_executor_cls: Type[Q] = node_executor_cls
+            self._save_data = save_data
+            self._save_call = save_call
+            self._copy_call = copy_call
+
+        def create_node_executor(
+            self,
+            node: "MimicNode",
+            pre_node_process_args: dict[str, Any],
+            pre_raw_nodes: dict[type["MimicNode"], dict[str, Any]],
+        ) -> "NodeExecutor":
+            """
+            Creates a NodeExecutor instance.
+
+            Args:
+                node (MimicNode): The mimic node to execute.
+                pre_node_process_args (dict[str, Any]): Pre-processed node arguments.
+                pre_raw_nodes (dict[type[MimicNode], dict[str, Any]]): Pre-processed raw nodes.
+
+            Returns:
+                NodeExecutor: The created NodeExecutor instance.
+            """
+            return self._node_executor_cls(node, pre_node_process_args, pre_raw_nodes, self._save_data)
+
+    @classmethod
+    def set_node_executor_factory(
+        cls,
+        ne_class: Type[Q],
+        save_data: SavedImagesDict,
+        save_call: Optional[Callable[[SavedImagesDict, Tensor, str], None]],
+        copy_call: Optional[Callable[[SavedImagesDict], None]],
+    ) -> None:
+        """
+        Gets or creates the NodeExecutorFactory singleton.
+
+        Returns:
+            NodeExecutorFactory: The NodeExecutorFactory instance.
+        """
+        MimicNode._node_executor_factory = MimicNode.NodeExecutorFactory(ne_class, save_data, save_call, copy_call)
+
+    @classmethod
+    def has_node_executor_factory(cls) -> bool:
+        """
+        Checks if the NodeExecutorFactory singleton exists.
+
+        Returns:
+            bool: True if the NodeExecutorFactory exists, False otherwise.
+        """
+        return MimicNode._node_executor_factory is not None
+
+    @property
+    def init_args_cache(self) -> Optional[CreationDict]:
+        """Returns the raw materials used to create this mimic node."""
+        return self._init_args_cache
+
+    @init_args_cache.setter
+    def init_args_cache(self, value: CreationDict) -> None:
+        """Sets the raw materials used to create this mimic node."""
+        if not value:
+            raise ValueError("init_args_cache value cannot be None or empty.")
+        self._init_args_cache = value
+
+    @property
+    def ne_param_cache(self) -> Optional[CreationDict]:
+        """Returns the NodeExecutor parameters cache."""
+        return self._ne_param_cache
+
+    @ne_param_cache.setter
+    def ne_param_cache(self, value: CreationDict) -> None:
+        """Sets the NodeExecutor parameters cache."""
+        if not value:
+            raise ValueError("ne_param_cache value cannot be None or empty.")
+        self._ne_param_cache = value
+
+    @property
+    def ne_result_cache(self) -> Optional[tuple[Any, SavedImagesDict]]:
+        """Returns the NodeExecutor result cache."""
+        return self._ne_result_cache
+
+    @ne_result_cache.setter
+    def ne_result_cache(self, value: tuple[Any, SavedImagesDict]) -> None:
+        """Sets the NodeExecutor result cache."""
+        if not value:
+            raise ValueError("ne_result_cache value cannot be None or empty.")
+        if not isinstance(value, tuple) or len(value) != 2:
+            raise ValueError("ne_result_cache value must be a tuple of (result, save_data).")
+        self._ne_result_cache = value
+
+    @final
+    def exec_node_spawn(
+        self: M,
+        pre_node_process_args: dict[str, Any],
+        pre_raw_nodes: dict[type[M], dict[str, Any]],
+    ) -> T:
+        """
+        Executes the mimic node in a separate process using spawn method.
+
+        Args:
+            pre_node_process_args (dict[str, Any]): Pre-processed node arguments.
+            pre_raw_nodes (dict[type[MimicNode], dict[str, Any]]): Pre-processed raw nodes.
+        Returns:
+            None
+        """
+        logging.info("████████████████  >>>>>>>>>>>>> %s <<<<<<<<<<<<<  ████████████████", self.key())
+        if not MimicNode.has_node_executor_factory():
+            raise RuntimeError(
+                "NodeExecutorFactory is not initialized for MimicNode, cannot exec_node_spawn. "
+                "Initialize it first by calling MimicNode.set_node_executor_factory."
+            )
+        iargs = self.init_args["args"]
+        ikwargs = self.init_args["kwargs"]
+        nargs = self.ne_param_cache["args"]
+        nkwargs = self.ne_param_cache["kwargs"]
+        factory = MimicNode._node_executor_factory
+        if self.__use_cache(self.init_args_cache, *iargs, **ikwargs) and self.__use_cache(
+            self.ne_param_cache, *nargs, **nkwargs
+        ):
+            logging.info("Using cached NodeExecutor for %s", self.__class__.__name__)
+            result, s_data = self.ne_result_cache  # type: ignore
+            factory.copy_call(s_data)  # type: ignore
+        else:
+            self.init_args_cache = self.init_args
+            self.ne_param_cache: CreationDict = {
+                "args": (pre_node_process_args, pre_raw_nodes),
+                "kwargs": {},
+            }
+            node_executor = factory.create_node_executor(self, pre_node_process_args, pre_raw_nodes)
+            result, s_data = node_executor.execute(factory.save_call)
+            self.ne_result_cache: tuple[Any, SavedImagesDict] = (result, s_data)
+            node_executor.save_data.update(s_data)
+        return result
+
     class ClassParam(Generic[N, M]):
         """A class parameter wrapper for MimicNode."""
+
         def process(self) -> dict[str, Any]:
             """Process method to be implemented on first use."""
             if self._implemented:
@@ -197,7 +357,7 @@ class MimicNode(ABC, Generic[T, M]):
                     """Wrapper function."""
                     if param not in kwargs:
                         raise TypeError(f"Missing required parameter: {param}")
-                    node: T = kwargs.pop(param)
+                    node: M = kwargs.pop(param)
                     additional_params: dict[str, Any] = self._processor(node)
                     kwargs.update(additional_params)
                     return self._target_func(*args, **kwargs)
@@ -268,12 +428,6 @@ class MimicNode(ABC, Generic[T, M]):
             raise TypeError("_class_param_definitions must return a list of ClassParam instances.")
         for cp in cls_params:
             cp.process()
-
-    def __init_subclass__(cls, **kwargs) -> None:
-        super().__init_subclass__(**kwargs)
-        if not inspect.isabstract(cls):
-            cls._eject_class_params()
-            cls.process = wraps(cls._process_impl)(cls.process)
 
     def process_args_dict(self, *args, **kwargs) -> dict[str, Any]:
         """
@@ -408,11 +562,18 @@ class MimicNode(ABC, Generic[T, M]):
         """Sets the raw materials used."""
         self._raw_materials = copy.deepcopy(value)
 
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        if not inspect.isabstract(cls):
+            cls._eject_class_params()
+            cls.process = wraps(cls._process_impl)(cls.process)
+
     def __new__(cls, *args, **kwargs):
         """
         Sets raw materials value on instance creation.
         """
         instance = super().__new__(cls)
+        cls.exec_node_spawn = wraps(cls._process_impl)(cls.exec_node_spawn)
         # Store raw materials for reconstruction
         instance._raw_materials = {"args": copy.deepcopy(args), "kwargs": copy.deepcopy(kwargs)}
         return instance
@@ -423,6 +584,9 @@ class MimicNode(ABC, Generic[T, M]):
         self._init_args: dict[str, Any] = {}
         self._exec_args: dict[str, Any] = {}
         self._last_output: Optional[Any] = None
+        self._ne_param_cache: Optional[CreationDict] = EMPTY_CREATION_DICT
+        self._init_args_cache: Optional[CreationDict] = EMPTY_CREATION_DICT
+        self._ne_result_cache: Optional[tuple[Any, SavedImagesDict]] = EMPTY_CREATION_DICT
 
     def _upload_image(self, image_name: str) -> Tensor:
         """Uploads an image given its name."""
@@ -450,6 +614,7 @@ class MimicNode(ABC, Generic[T, M]):
             img_tensor = output_images[0]
         return img_tensor
 
+    @final
     def update(self, *args, **kwargs) -> None:
         """Updates the node."""
         try:
@@ -468,10 +633,11 @@ class MimicNode(ABC, Generic[T, M]):
         """Abstract method to update the node."""
 
     @abstractmethod
-    def _process_impl(self, *args, **kwargs) -> Any:
+    def _process_impl(self, *args, **kwargs) -> T:
         """Abstract method to process data."""
 
-    def process(self, *args, **kwargs) -> Any:
+    @final
+    def process(self, *args, **kwargs) -> T:
         """Processes data and returns the result, using caching if available."""
         if self._return_cache and self._last_output is not None and self.__use_cache(self._exec_args, *args, **kwargs):
             logging.info("====== Using cached output for %s ======", self.__class__.__name__)
@@ -479,13 +645,19 @@ class MimicNode(ABC, Generic[T, M]):
         self._return_cache = False
         logging.info("====== Processing %s ======", self.__class__.key())
         uw_args, uw_kwargs = self._unwrap_data_dict(*args, **kwargs)
-        res = self._feed_function(self._process_impl, *uw_args, **uw_kwargs)
+        try:
+            res = self._feed_function(self._process_impl, *uw_args, **uw_kwargs)
+        except EndOfFlowException:
+            pass
+        except Exception as e:
+            logging.exception("Error processing %s: %s", self.__class__.__name__, str(e))
+            raise e
         self._exec_args = {"args": args, "kwargs": kwargs}
         self._last_output = res
         self._return_cache = True
         return res
 
-    def __use_cache(self, cached_args: dict, *args, **kwargs) -> bool:
+    def __use_cache(self, cached_args: CreationDict, *args, **kwargs) -> bool:
         """Evaluates whether to use cached output based on the provided arguments."""
         cache_invalid: bool = False
         if cached_args and "args" in cached_args and "kwargs" in cached_args:
@@ -597,8 +769,8 @@ def _node_executor_target(
     node_init_args: CreationDict,
     node_exec_args: dict[str, Any],
     raw_nodes_serialized: dict[str, tuple[type[MimicNode], CreationDict]],
-    save_call: Optional[Callable[[dict[str, bool | list[str]], Tensor, str], None]],
-    save_data: dict[str, bool | list[str]],
+    save_call: Optional[Callable[[SavedImagesDict, Tensor, str], None]],
+    save_data: SavedImagesDict,
     result_queue: mlp.Queue,
 ) -> None:
     """
@@ -675,7 +847,7 @@ class NodeExecutor:
         return self._result_queue
 
     @property
-    def save_data(self) -> dict[str, bool | list[str]]:
+    def save_data(self) -> SavedImagesDict:
         """Get the save data dictionary."""
         return self._save_data
 
@@ -684,9 +856,9 @@ class NodeExecutor:
         node: MimicNode,
         pre_node_process_args: dict[str, Any],
         pre_raw_nodes: dict[type[MimicNode], dict[str, Any]],
-        save_data: dict[str, bool | list[str]],
+        save_data: SavedImagesDict,
     ):
-        self._save_data: dict[str, bool | list[str]] = save_data
+        self._save_data: SavedImagesDict = save_data
         self._node: MimicNode = node
         self._node_process_args: dict[str, Any] = {}
         for key, value in pre_node_process_args.items():
@@ -706,10 +878,10 @@ class NodeExecutor:
 
     def execute(
         self,
-        save_call: Optional[Callable[[dict[str, bool | list[str]], Tensor, str], None]] = None,
+        save_call: Optional[Callable[[SavedImagesDict, Tensor, str], None]] = None,
         timeout: Optional[float] = None,
         poll_interval: float = 0.05,
-    ) -> Any:
+    ) -> tuple[Any, SavedImagesDict]:
         """
         Execute the node in a child process and return the result.
 
@@ -773,14 +945,12 @@ class NodeExecutor:
         if self._result_queue.empty():
             logging.error("No result returned from child process for %s", self._node.__class__.__name__)
             raise RuntimeError("Child process ended without returning a result")
-
+        s_data: SavedImagesDict
         status, s_data, result = self._result_queue.get()
 
         logging.info("ending child process for %s", self._node.__class__.__name__)
         self._process.terminate()
         self._process.join(timeout=5)
-
-        self._save_data.update(s_data)
 
         if status == "error":
             logging.error("Child process raised an exception for %s", self._node.__class__.__name__)
@@ -788,7 +958,7 @@ class NodeExecutor:
 
         logging.info("Node %s executed successfully in child process", self._node.__class__.__name__)
 
-        return result
+        return result, s_data
 
     @classmethod
     def _executable(

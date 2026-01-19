@@ -6,12 +6,14 @@ import logging
 import shutil
 from functools import partial
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Callable
 import json_gui.server as __  # noqa: F401, E402 pylint: disable=C0413
 import folder_paths
 import torch
 from PIL import Image
 import numpy as np
+
+from json_gui.typedicts import SavedImagesDict
 
 
 def get_main_images_path() -> str:
@@ -82,14 +84,31 @@ def get_folder_files_recursive(folder: str) -> tuple[list[str], str]:
 
 
 def save_image(
-    data: dict[str, bool | list[str]],
+    data: SavedImagesDict,
     images: torch.Tensor,
     identifier: str,
     steps: int,  # from flow instance
     file_identifier: str,  # from flow instance
     is_temp: bool = True,
-) -> tuple[bool | dict]:
-    """Saves generated images to the temporary directory and appends their paths to created_images."""
+) -> None:
+    """
+    saves images to disk with unique filenames based on identifier and file_identifier.
+    If the number of saved images reaches 'steps', raises EndOfFlowException.
+    Args:
+        data (SavedImagesDict):
+            created_images: list[str] - list of file paths of created images
+            last_saved_to_temp: bool - indicates if the last save was to temp directory. Is overwritten on each save
+        images (torch.Tensor): the image tensor to save
+        identifier (str): unique identifier for the image
+        steps (int): number of steps for the flow
+        file_identifier (str): unique file identifier for the flow
+        is_temp (bool): whether to save to temp directory or output directory
+
+    Raises:
+        RuntimeError: if unable to save image after multiple attempts.
+        EndOfFlowException: if the number of saved images reaches 'steps'.
+    """
+
     assert isinstance(data, dict) and len(data) == 2
     # assert keys present
     assert (
@@ -119,6 +138,46 @@ def save_image(
         raise EndOfFlowException(steps)
 
 
+def copy_images(
+    steps: int, data: SavedImagesDict, file_identifier: str, regex_pattern: str, new_data: SavedImagesDict
+) -> None:
+    """
+
+    Args:
+        data (SavedImagesDict):
+            created_images: list[str] - list of file paths of created images originally
+            last_saved_to_temp: bool - indicates if the last save was to temp directory. Is overwritten by new_data
+        steps (int): number of steps for the flow
+        source_paths (list[str]): list of source image file paths
+        file_identifier (str): unique file identifier for the flow
+        regex_pattern (str):
+        data (SavedImagesDict):
+            created_images: list[str] - list of file paths of created images during node spawn execution
+            last_saved_to_temp: bool - indicates if the last save was to temp directory. Overrides data's value
+
+    Raises:
+        EndOfFlowException:
+
+    Returns:
+        list[str]:
+    """
+    created_images = data["created_images"]
+    source: list[str] = new_data["created_images"]
+    idx = len(created_images)
+    new_images = created_images + source[idx:]
+    pre_paths: list[tuple[str, str]] = [os.path.split(path) for path in new_images]
+    parents, files = zip(*pre_paths) if pre_paths else ([], [])
+    copied_f_names: list[str] = [re.sub(regex_pattern, file_identifier, f_name) for f_name in files]
+    copied_paths: list[str] = [os.path.join(folder, f_name) for folder, f_name in zip(parents, copied_f_names)]
+    for src, dst in zip(created_images, copied_paths):
+        shutil.copy2(src, dst)
+        logging.info("Copied image from %s to %s", src, dst)
+    data["created_images"] = copied_paths
+    data["last_saved_to_temp"] = new_data["last_saved_to_temp"]
+    if len(copied_paths) >= steps:
+        raise EndOfFlowException(steps)
+
+
 class AbsFlow(ABC):
     """Abstract base class for flow implementations."""
 
@@ -133,18 +192,23 @@ class AbsFlow(ABC):
         return self._file_path
 
     @property
-    def save_image(self) -> Optional[Callable[[dict[bool | list[str]], torch.Tensor, str, bool], tuple[bool | dict]]]:
+    def save_image(self) -> Callable[[SavedImagesDict, torch.Tensor, str, bool], tuple[bool | dict]]:
         """Returns the save image callback."""
         return self._save_image
 
     @property
-    def saved_data(self) -> dict[str, Optional[bool | list[str]]]:
+    def copy_images(self) -> Callable[[SavedImagesDict], None]:
+        """Returns the copy images callback."""
+        return self._copy_images
+
+    @property
+    def saved_data(self) -> SavedImagesDict:
         """Returns the saved data dictionary."""
         return self._saved_data
 
     def __init__(self, file_path: str, filename: str) -> None:
         """Initializes the AbsFlow instance."""
-        self._saved_data: dict = {"last_saved_to_temp": None, "created_images": []}
+        self._saved_data: SavedImagesDict = {"last_saved_to_temp": None, "created_images": []}
         self._file_path = file_path
         self._json_path = os.path.join(get_main_images_path(), file_path, f"{filename}.json")
         files, folder = _get_output_files_recursive()
@@ -161,8 +225,15 @@ class AbsFlow(ABC):
                 idx = max(indexes) + 1
         self._file_identifier = f"{filename}_r{idx}"
 
-        self._save_image: Optional[Callable[[dict[bool | list[str]], torch.Tensor, str, bool], tuple[bool | dict]]] = (
-            partial(save_image, steps=1, file_identifier=self._file_identifier)
+        self._save_image: Callable[[SavedImagesDict, torch.Tensor, str, bool], tuple[bool | dict]] = partial(
+            save_image, steps=1, file_identifier=self._file_identifier
+        )
+        self._copy_images: Callable[[SavedImagesDict], None] = partial(
+            copy_images,
+            steps=1,
+            data=self._saved_data,
+            file_identifier=self._file_identifier,
+            regex_pattern=rf"^{filename}_r\d+",
         )
 
         # delete any output files with this identifier

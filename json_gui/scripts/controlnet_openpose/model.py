@@ -6,12 +6,11 @@ import logging
 from typing import Any, Callable, Optional, cast
 
 import torch
+from json_gui.scripts.mimic_ksamplers import SimpleKSampler, FaceDetailerNode
 from json_gui.scripts.mimic_controlnet import ControlNetImgPreprocessor, CannyEdge, OpenPosePose, ApplyControlNet
 from json_gui.scripts.mimic_classes import (
     Sd3Clip,
     EmptyLatent,
-    SimpleKSampler,
-    FaceDetailerNode,
     Rotator,
     SkipLayers,
     MimicNode,
@@ -21,8 +20,6 @@ from json_gui.scripts.mimic_classes import (
 
 class Model:
     """Class representing a flow loaded from a JSON file.""" ""
-
-    file_path: Optional[str] = None
 
     def set_save_call(self, value: Callable[[torch.Tensor, str], None]) -> None:
         """Sets the save image callback."""
@@ -71,14 +68,11 @@ class Model:
 
     def __init__(self, filepath: Optional[str] = None) -> None:
         """Initializes the Flow instance by loading data from a JSON file."""
-        self._save_call: Optional[Callable[[torch.Tensor, str], None]] = None
-        if filepath is None and self.__class__.file_path is None:
-            raise ValueError("File path must be provided at least once.")
-        if filepath is not None:
-            self.__class__.file_path = filepath
-            assert os.path.exists(filepath), f"Flow file {filepath} does not exist."
-            logging.info("Loading flow from %s", filepath)
-        self._file_path: str = self.__class__.file_path
+        self._save_call = lambda img, name: None
+        assert filepath, "Invalid file path."
+        assert os.path.exists(filepath), f"Flow file {filepath} does not exist."
+        logging.info("Loading flow from %s", filepath)
+        self._file_path: str = filepath
         self._clip: Sd3Clip = Sd3Clip()
         self.load_json()
 
@@ -120,7 +114,7 @@ class Model:
                 continue  # Skip CLIP property
             if isinstance(value, list):
                 is_list = True
-                prop_type = type(value[0]) if value else None
+                prop_type = type(value[0])
             if issubclass(prop_type, MimicNode):
                 key = prop_type.key()
                 data = json_props[key]
