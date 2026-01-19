@@ -3,9 +3,8 @@
 import os
 import json
 import logging
-from typing import Any, Callable, Optional, cast
+from typing import Any, Optional, cast
 
-import torch
 from json_gui.scripts.mimic_ksamplers import SimpleKSampler, FaceDetailerNode
 from json_gui.scripts.mimic_controlnet import ControlNetImgPreprocessor, CannyEdge, OpenPosePose, ApplyControlNet
 from json_gui.scripts.mimic_classes import (
@@ -20,11 +19,6 @@ from json_gui.scripts.mimic_classes import (
 
 class Model:
     """Class representing a flow loaded from a JSON file.""" ""
-
-    def set_save_call(self, value: Callable[[torch.Tensor, str], None]) -> None:
-        """Sets the save image callback."""
-        assert value is not None, "Save call cannot be None."
-        self._save_call = value
 
     @property
     def clip(self) -> Sd3Clip:
@@ -68,7 +62,6 @@ class Model:
 
     def __init__(self, filepath: Optional[str] = None) -> None:
         """Initializes the Flow instance by loading data from a JSON file."""
-        self._save_call = lambda img, name: None
         assert filepath, "Invalid file path."
         assert os.path.exists(filepath), f"Flow file {filepath} does not exist."
         logging.info("Loading flow from %s", filepath)

@@ -323,8 +323,13 @@ class MimicNode(ABC, Generic[T, M]):
         nargs = self.ne_param_cache["args"]
         nkwargs = self.ne_param_cache["kwargs"]
         factory = MimicNode._node_executor_factory
+        res_cache_exists = (
+            True
+            if self.ne_result_cache[0] is not None and not isinstance(self.ne_result_cache[0], EndOfFlowException)
+            else False
+        )
         if self.__use_cache(self.init_args_cache, *iargs, **ikwargs) and self.__use_cache(
-            self.ne_param_cache, *nargs, **nkwargs
+            self.ne_param_cache, *nargs, **nkwargs and res_cache_exists
         ):
             logging.info("Using cached NodeExecutor for %s", self.__class__.__name__)
             result, s_data = self.ne_result_cache  # type: ignore
@@ -337,8 +342,10 @@ class MimicNode(ABC, Generic[T, M]):
             }
             node_executor = factory.create_node_executor(self, pre_node_process_args, pre_raw_nodes)
             result, s_data = node_executor.execute(factory.save_call)
-            self.ne_result_cache: tuple[Any, SavedImagesDict] = (result, s_data)
+            self.ne_result_cache: tuple[Any, SavedImagesDict] = (result, copy.deepcopy(s_data))
             node_executor.save_data.update(s_data)
+            if isinstance(result, EndOfFlowException):
+                raise result
         return result
 
     class ClassParam(Generic[N, M]):
@@ -586,7 +593,7 @@ class MimicNode(ABC, Generic[T, M]):
         self._last_output: Optional[Any] = None
         self._ne_param_cache: Optional[CreationDict] = EMPTY_CREATION_DICT
         self._init_args_cache: Optional[CreationDict] = EMPTY_CREATION_DICT
-        self._ne_result_cache: Optional[tuple[Any, SavedImagesDict]] = EMPTY_CREATION_DICT
+        self._ne_result_cache: tuple[Any, SavedImagesDict] = (None, {"created_images": [], "last_saved_to_temp": None})
 
     def _upload_image(self, image_name: str) -> Tensor:
         """Uploads an image given its name."""
@@ -647,8 +654,8 @@ class MimicNode(ABC, Generic[T, M]):
         uw_args, uw_kwargs = self._unwrap_data_dict(*args, **kwargs)
         try:
             res = self._feed_function(self._process_impl, *uw_args, **uw_kwargs)
-        except EndOfFlowException:
-            pass
+        except EndOfFlowException as eof:
+            res = eof
         except Exception as e:
             logging.exception("Error processing %s: %s", self.__class__.__name__, str(e))
             raise e

@@ -1,8 +1,6 @@
 """Script to run a ControlNet flow with Triple CLIP and FaceDetailer integration."""
 
 import logging
-from typing import Callable
-from functools import partial
 import torch
 from json_gui.scripts.controlnet_openpose.model import Model
 from json_gui.utils import AbsFlow
@@ -26,34 +24,13 @@ class Flow(AbsFlow):
             value (int): Number of steps for the flow.
         """
         assert isinstance(value, int), "Flow input value must be an integer."
-        self.update_save_call(value)
-        self._input_model.set_save_call(self.save_call)
+        # self.update_save_call(value)
         self._input_model.update_json()
-        MimicNode.set_node_executor_factory(
-            NodeExecutor,
-            self.saved_data,
-            self.save_call,
-            self.copy_images
-        )
-
-    @property
-    def save_call(self) -> Callable:
-        """Get the save image callback."""
-        return self._save_call
-
-    def update_save_call(self, value: int) -> None:
-        """
-        Update the save image callback with the given number of steps.
-        Args:
-            value (int): Number of steps for saving images.
-        """
-        assert isinstance(value, int), "Save call value must be an integer."
-        self._save_call = partial(self.save_image, steps=value)
+        MimicNode.set_node_executor_factory(NodeExecutor, self.saved_data, self.save_image, self.copy_images)
 
     def __init__(self, file_path: str, filename: str) -> None:
         super().__init__(file_path, filename)
         self._input_model: Model = Model(self.json_path)
-        self.update_save_call(0)
 
     def _run_impl(self, steps: int) -> list[str]:
         """Main function to run the ControlNet flow."""
@@ -101,7 +78,7 @@ class Flow(AbsFlow):
 
         unrotated = unrotator(detailed_image)
 
-        self.save_call(self.saved_data, unrotated, "unrotated", is_temp=False)
+        self.save_image(self.saved_data, unrotated, "unrotated", is_temp=False)
 
         # Cleanup: unload models and free memory after flow execution
         comfy.model_management.unload_all_models()

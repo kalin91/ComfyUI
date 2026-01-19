@@ -796,32 +796,26 @@ class JSONManagerApp:
             device = torch.cuda.current_device()
             device_name = torch.cuda.get_device_name(device)
             device_props = torch.cuda.get_device_properties(device)
-
             # Basic memory info
             free_cuda, total_cuda = torch.cuda.mem_get_info()
             used_cuda = total_cuda - free_cuda
-
             # PyTorch memory stats
             stats = torch.cuda.memory_stats(device)
             mem_allocated = stats.get("allocated_bytes.all.current", 0)
             mem_reserved = stats.get("reserved_bytes.all.current", 0)
             mem_active = stats.get("active_bytes.all.current", 0)
             mem_inactive = mem_reserved - mem_active
-
             # Peak memory
             mem_allocated_peak = stats.get("allocated_bytes.all.peak", 0)
             mem_reserved_peak = stats.get("reserved_bytes.all.peak", 0)
-
             # Allocation counts
             num_allocs = stats.get("allocation.all.current", 0)
             num_allocs_peak = stats.get("allocation.all.peak", 0)
-
             # Segment info (fragmentation indicator)
             num_segments = stats.get("segment.all.current", 0)
             num_segments_peak = stats.get("segment.all.peak", 0)
             large_pool_allocated = stats.get("allocated_bytes.large_pool.current", 0)
             small_pool_allocated = stats.get("allocated_bytes.small_pool.current", 0)
-
             # OOM stats
             num_ooms = stats.get("num_ooms", 0)
             num_alloc_retries = stats.get("num_alloc_retries", 0)

@@ -164,22 +164,27 @@ def copy_images(
     created_images = data["created_images"]
     source: list[str] = new_data["created_images"]
     idx = len(created_images)
-    new_images = created_images + source[idx:]
+    new_images = source[idx:]
     pre_paths: list[tuple[str, str]] = [os.path.split(path) for path in new_images]
     parents, files = zip(*pre_paths) if pre_paths else ([], [])
     copied_f_names: list[str] = [re.sub(regex_pattern, file_identifier, f_name) for f_name in files]
     copied_paths: list[str] = [os.path.join(folder, f_name) for folder, f_name in zip(parents, copied_f_names)]
-    for src, dst in zip(created_images, copied_paths):
+    for src, dst in zip(new_images, copied_paths):
         shutil.copy2(src, dst)
         logging.info("Copied image from %s to %s", src, dst)
-    data["created_images"] = copied_paths
+    created_images.extend(copied_paths)
     data["last_saved_to_temp"] = new_data["last_saved_to_temp"]
-    if len(copied_paths) >= steps:
+    if len(created_images) >= steps:
         raise EndOfFlowException(steps)
 
 
 class AbsFlow(ABC):
     """Abstract base class for flow implementations."""
+
+    @property
+    def filename(self) -> str:
+        """Returns the file identifier associated with the flow."""
+        return self._filename
 
     @property
     def json_path(self) -> str:
@@ -208,9 +213,15 @@ class AbsFlow(ABC):
 
     def __init__(self, file_path: str, filename: str) -> None:
         """Initializes the AbsFlow instance."""
+        self._filename: str = filename
         self._saved_data: SavedImagesDict = {"last_saved_to_temp": None, "created_images": []}
         self._file_path = file_path
         self._json_path = os.path.join(get_main_images_path(), file_path, f"{filename}.json")
+        self.set_file_vars()
+
+    def set_file_vars(self, steps=1) -> None:
+        """Sets up file identifier and related callbacks."""
+        filename = self._filename
         files, folder = _get_output_files_recursive()
         idx = 0
         if files:
@@ -226,14 +237,15 @@ class AbsFlow(ABC):
         self._file_identifier = f"{filename}_r{idx}"
 
         self._save_image: Callable[[SavedImagesDict, torch.Tensor, str, bool], tuple[bool | dict]] = partial(
-            save_image, steps=1, file_identifier=self._file_identifier
+            save_image, steps=steps, file_identifier=self._file_identifier
         )
+        self._copy_regex_pattern = rf"^{filename}_r\d+"
         self._copy_images: Callable[[SavedImagesDict], None] = partial(
             copy_images,
-            steps=1,
-            data=self._saved_data,
-            file_identifier=self._file_identifier,
-            regex_pattern=rf"^{filename}_r\d+",
+            steps,
+            self._saved_data,
+            self._file_identifier,
+            self._copy_regex_pattern,
         )
 
         # delete any output files with this identifier
@@ -253,7 +265,7 @@ class AbsFlow(ABC):
         """Runs the flow and returns a list of created image file paths."""
         # Saving a copy of json file to output directory
         self._saved_data["created_images"].clear()
-        self._save_image = partial(save_image, steps=steps, file_identifier=self._file_identifier)
+        self.set_file_vars(steps)
         output_json_path = os.path.join(folder_paths.get_output_directory(), f"{self._file_identifier}.json")
         shutil.copy2(self._json_path, output_json_path)
         logging.info("Saved flow JSON to output directory: %s", output_json_path)
