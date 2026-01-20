@@ -191,7 +191,7 @@ class SimpleKSampler(KSamplerLike[Tuple[torch.Tensor, torch.Tensor], "SimpleKSam
 
             logging.info("Final Image Shape: %s", images.shape)
 
-            self._save_tensor(images, self.key())
+            self.add_unsaved_tensor(images, self.key())
 
             return res, images
         except Exception as e:
@@ -316,13 +316,12 @@ class FaceDetailerNode(KSamplerLike[torch.Tensor, "FaceDetailerNode"]):
                 raise ValueError(f"Unexpected argument '{key}' for FaceDetailer.doit")
 
         result_images, cropped_images, cropped_alpha, mask = face_detailer.doit(**face_arguments)[:4]
-        if self._save_tensor:
-            for idx, cropped in enumerate(cropped_images):
-                self._save_tensor(cropped, f"face-cropped-{idx}")
-            for idx, alpha in enumerate(cropped_alpha):
-                self._save_tensor(alpha, f"face-alpha-{idx}")
-            mask_img_tensor: tuple = MaskToImage().execute(mask).result[0]  # pylint: disable=E1136
-            self._save_tensor(mask_img_tensor, "face-mask")
+        for idx, cropped in enumerate(cropped_images):
+            self.add_unsaved_tensor(cropped, f"face-cropped-{idx}")
+        for idx, alpha in enumerate(cropped_alpha):
+            self.add_unsaved_tensor(alpha, f"face-alpha-{idx}")
+        mask_img_tensor: tuple = MaskToImage().execute(mask).result[0]  # pylint: disable=E1136
+        self.add_unsaved_tensor(mask_img_tensor, "face-mask")
         return result_images
 
     # pylint: disable=W0221

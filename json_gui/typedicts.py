@@ -10,9 +10,6 @@ class CreationDict(TypedDict):
     kwargs: dict[str, Any]
 
 
-EMPTY_CREATION_DICT: CreationDict = {"args": [], "kwargs": {}}
-
-
 class SavedImagesDict(TypedDict):
     """Dictionary for saved images."""
 
@@ -32,6 +29,11 @@ class BodyDict(TypedDict):
     """Dictionary representing the flow body."""
 
     props: dict[str, BodyNode]
+
+
+def get_empty_creation_dict() -> CreationDict:
+    """Returns a new empty CreationDict."""
+    return {"args": [], "kwargs": {}}
 
 
 def is_bodydict(obj: object) -> TypeGuard[BodyDict]:

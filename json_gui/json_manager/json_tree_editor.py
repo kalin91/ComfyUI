@@ -305,7 +305,7 @@ def _create_multiline_text_widget(
     value: Any,
     full_key: str,
     indent: int,
-    on_text_modified: Callable[[tk.Event], None],
+    notify_change: Callable[[], None],
     text_entries: dict[str, tk.Text],
 ) -> None:
     """Create a multiline text widget."""
@@ -321,7 +321,7 @@ def _create_multiline_text_widget(
         text_widget.configure(yscrollcommand=text_scrollbar.set)
 
         text_widget.insert("1.0", str(value))
-        text_widget.bind("<<Modified>>", on_text_modified)
+        text_widget.bind("<KeyRelease>", lambda e: notify_change())
 
         # Bind mousewheel directly to text widget (not bind_all)
         bind_scroll_events(text_widget)
@@ -753,7 +753,7 @@ class JSONTreeEditor(ttk.Frame):
                             value,
                             full_key,
                             indent,
-                            self._on_text_modified,
+                            self._notify_change,
                             self.text_entries,
                         )
 
@@ -908,10 +908,3 @@ class JSONTreeEditor(ttk.Frame):
     def _notify_change(self) -> None:
         """Notify that a value has changed."""
         self._on_change(True)
-
-    def _on_text_modified(self, event: tk.Event) -> None:
-        """Handle text widget modification."""
-        widget = event.widget
-        if widget.edit_modified():
-            self._notify_change()
-            widget.edit_modified(False)

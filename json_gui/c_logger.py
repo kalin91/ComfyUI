@@ -31,8 +31,9 @@ def worker_wrapper(
         logger = logging.getLogger(__name__)
         logger.info("Child process logger initialized.")
         return func(flow_queue)
-    except Exception:
+    except Exception as e:
         logging.exception("Error in worker wrapper")
+        raise e
 
 
 class StreamToLogger:

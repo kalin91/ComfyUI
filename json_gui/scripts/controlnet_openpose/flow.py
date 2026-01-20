@@ -4,7 +4,8 @@ import logging
 import torch
 from json_gui.scripts.controlnet_openpose.model import Model
 from json_gui.utils import AbsFlow
-from json_gui.scripts.mimic import MimicNode, NodeExecutor
+from json_gui.scripts.mimic import MimicNode
+from json_gui.scripts.node_executor import NodeExecutor
 import comfy.model_management
 
 

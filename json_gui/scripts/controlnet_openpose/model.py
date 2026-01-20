@@ -112,15 +112,30 @@ class Model:
                 key = prop_type.key()
                 data = json_props[key]
                 if issubclass(prop_type, ApplyControlNet):
+                    list_control_net: list[ApplyControlNet] = []
+                    preprocesors_dict = {t.key(): t for t in [CannyEdge, OpenPosePose]}
+                    if not isinstance(value, list) or not isinstance(data, list):
+                        raise ValueError("Mismatch in types for ApplyControlNet update.")
                     for i, item in enumerate(data):
                         item = cast(dict[str, Any], item)
-                        node = cast(ApplyControlNet, value[i])
-                        target_inst: ControlNetImgPreprocessor = node.target
+                        idx_exists: bool = 0 <= i < len(value)
+                        node: ApplyControlNet
+                        target_inst: ControlNetImgPreprocessor
                         target_name: str = item["target"]
                         target_dict = json_props.pop(target_name)
-                        target_inst.update(**target_dict)
-                        item["target"] = (target_inst.__class__, target_dict)
-                        node.update(**item)
+                        target_type: type = preprocesors_dict[target_name]
+                        if idx_exists and target_name == (node := value[i]).target.key():
+                            target_inst = node.target
+                            target_inst.update(**target_dict)
+                            item["target"] = (target_inst.__class__, target_dict)
+                            node.update(**item)
+                        else:
+                            target_inst = target_type(**target_dict)
+                            item["target"] = (target_inst.__class__, target_dict)
+                            node = ApplyControlNet(**item)
+                        list_control_net.append(node)
+                    value.clear()
+                    value.extend([c for c in list_control_net if c.target is not None])
                 else:
                     if is_list:
                         for i, item in enumerate(data):

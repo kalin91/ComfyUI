@@ -1,26 +1,38 @@
 """Mimic Parent Class and Utilities."""
 
-import types
-import time
 import logging
 import copy
 import uuid
-from functools import wraps, partial
-from typing import Any, Callable, Literal, Optional, ParamSpec, Type, TypeVar, Generic, cast, get_args, final
+from functools import wraps
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    Optional,
+    ParamSpec,
+    Type,
+    TypeVar,
+    Generic,
+    cast,
+    get_args,
+    final,
+    TYPE_CHECKING,
+)
 from abc import ABC, abstractmethod
 import os
-import signal
 import pickle
 import inspect
 import numpy as np
 import torch
-from torch import Tensor, multiprocessing as mlp
+from torch import Tensor
 from PIL import Image, ImageOps, ImageSequence
-from json_gui.typedicts import EMPTY_CREATION_DICT, CreationDict, SavedImagesDict
-from json_gui import p_logger, c_logger
+from json_gui.typedicts import get_empty_creation_dict, CreationDict, SavedImagesDict
 from json_gui.utils import EndOfFlowException
 import node_helpers
 import folder_paths
+
+if TYPE_CHECKING:
+    from json_gui.scripts.node_executor import NodeExecutor
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -154,28 +166,63 @@ class DataWrapper(Generic[T]):
         return self._value
 
 
-def safe_reference_compare(var1, var2) -> bool:
+def safe_reference_compare(var1, var2, _memo: set | None = None) -> bool:
     """
-    if var1 and var2 are of basic types (int, float, str, bool, tuple, bytes, NoneType),
-    compare by value (==); else compare by identity (is).
+    Compare two values safely:
+    - DataWrapper: by identifier
+    - torch.Tensor: by content (torch.equal)
+    - Basic types (int, float, str, bool, tuple, bytes, None): by value
+    - dict/list: recursively
+    - Everything else: by identity (is)
     """
-    # 1. For DataWrapper, always compare by identifier
+    # Prevent infinite recursion on circular references
+    if _memo is None:
+        _memo = set()
+
+    pair_id = (id(var1), id(var2))
+    if pair_id in _memo:
+        return True  # Already comparing these objects
+
+    # 1. DataWrapper: compare by identifier
     if isinstance(var1, DataWrapper):
+        if not isinstance(var2, DataWrapper):
+            return False
         return var1.identifier == var2.identifier
 
-    # 2. For torch.Tensor, compare by content
-    if isinstance(var1, torch.Tensor) and isinstance(var2, torch.Tensor):
+    # 2. torch.Tensor: compare by content
+    if isinstance(var1, torch.Tensor):
+        if not isinstance(var2, torch.Tensor):
+            return False
+        if var1.shape != var2.shape:
+            return False
         return torch.equal(var1, var2)
 
-    # 3. For basic types, compare by value
-    optimizable_types = (int, str, float, bool, tuple, bytes, type(None))
-
+    # 3. Basic immutable types: compare by value
+    optimizable_types = (int, str, float, bool, bytes, type(None))
     if isinstance(var1, optimizable_types):
-        # assuming their __eq__ methods are standard and safe.
         return var1 == var2
 
-    # 4. For EVERYTHING else (lists, dicts, your own classes, etc.)
-    # we use 'is' to avoid triggering custom or slow __eq__ methods.
+    # 4. Tuples: recursive comparison
+    if isinstance(var1, tuple):
+        if not isinstance(var2, tuple) or len(var1) != len(var2):
+            return False
+        return all(safe_reference_compare(a, b, _memo) for a, b in zip(var1, var2))
+
+    # 5. Lists: recursive comparison
+    if isinstance(var1, list):
+        if not isinstance(var2, list) or len(var1) != len(var2):
+            return False
+        _memo.add(pair_id)
+        return all(safe_reference_compare(a, b, _memo) for a, b in zip(var1, var2))
+
+    # 6. Dicts: recursive comparison
+    if isinstance(var1, dict):
+        if not isinstance(var2, dict) or var1.keys() != var2.keys():
+            return False
+        _memo.add(pair_id)
+        return all(safe_reference_compare(var1[k], var2[k], _memo) for k in var1)
+
+    # 7. Everything else: identity comparison
     return var1 is var2
 
 
@@ -183,6 +230,7 @@ class MimicNode(ABC, Generic[T, M]):
     """A mimic class for various nodes."""
 
     _node_executor_factory: Optional["NodeExecutorFactory"] = None
+    _current_model: Optional[M] = None
 
     class NodeExecutorFactory(Generic[Q]):
         """Factory class to create NodeExecutor instances."""
@@ -232,121 +280,6 @@ class MimicNode(ABC, Generic[T, M]):
                 NodeExecutor: The created NodeExecutor instance.
             """
             return self._node_executor_cls(node, pre_node_process_args, pre_raw_nodes, self._save_data)
-
-    @classmethod
-    def set_node_executor_factory(
-        cls,
-        ne_class: Type[Q],
-        save_data: SavedImagesDict,
-        save_call: Optional[Callable[[SavedImagesDict, Tensor, str], None]],
-        copy_call: Optional[Callable[[SavedImagesDict], None]],
-    ) -> None:
-        """
-        Gets or creates the NodeExecutorFactory singleton.
-
-        Returns:
-            NodeExecutorFactory: The NodeExecutorFactory instance.
-        """
-        MimicNode._node_executor_factory = MimicNode.NodeExecutorFactory(ne_class, save_data, save_call, copy_call)
-
-    @classmethod
-    def has_node_executor_factory(cls) -> bool:
-        """
-        Checks if the NodeExecutorFactory singleton exists.
-
-        Returns:
-            bool: True if the NodeExecutorFactory exists, False otherwise.
-        """
-        return MimicNode._node_executor_factory is not None
-
-    @property
-    def init_args_cache(self) -> Optional[CreationDict]:
-        """Returns the raw materials used to create this mimic node."""
-        return self._init_args_cache
-
-    @init_args_cache.setter
-    def init_args_cache(self, value: CreationDict) -> None:
-        """Sets the raw materials used to create this mimic node."""
-        if not value:
-            raise ValueError("init_args_cache value cannot be None or empty.")
-        self._init_args_cache = value
-
-    @property
-    def ne_param_cache(self) -> Optional[CreationDict]:
-        """Returns the NodeExecutor parameters cache."""
-        return self._ne_param_cache
-
-    @ne_param_cache.setter
-    def ne_param_cache(self, value: CreationDict) -> None:
-        """Sets the NodeExecutor parameters cache."""
-        if not value:
-            raise ValueError("ne_param_cache value cannot be None or empty.")
-        self._ne_param_cache = value
-
-    @property
-    def ne_result_cache(self) -> Optional[tuple[Any, SavedImagesDict]]:
-        """Returns the NodeExecutor result cache."""
-        return self._ne_result_cache
-
-    @ne_result_cache.setter
-    def ne_result_cache(self, value: tuple[Any, SavedImagesDict]) -> None:
-        """Sets the NodeExecutor result cache."""
-        if not value:
-            raise ValueError("ne_result_cache value cannot be None or empty.")
-        if not isinstance(value, tuple) or len(value) != 2:
-            raise ValueError("ne_result_cache value must be a tuple of (result, save_data).")
-        self._ne_result_cache = value
-
-    @final
-    def exec_node_spawn(
-        self: M,
-        pre_node_process_args: dict[str, Any],
-        pre_raw_nodes: dict[type[M], dict[str, Any]],
-    ) -> T:
-        """
-        Executes the mimic node in a separate process using spawn method.
-
-        Args:
-            pre_node_process_args (dict[str, Any]): Pre-processed node arguments.
-            pre_raw_nodes (dict[type[MimicNode], dict[str, Any]]): Pre-processed raw nodes.
-        Returns:
-            None
-        """
-        logging.info("████████████████  >>>>>>>>>>>>> %s <<<<<<<<<<<<<  ████████████████", self.key())
-        if not MimicNode.has_node_executor_factory():
-            raise RuntimeError(
-                "NodeExecutorFactory is not initialized for MimicNode, cannot exec_node_spawn. "
-                "Initialize it first by calling MimicNode.set_node_executor_factory."
-            )
-        iargs = self.init_args["args"]
-        ikwargs = self.init_args["kwargs"]
-        nargs = self.ne_param_cache["args"]
-        nkwargs = self.ne_param_cache["kwargs"]
-        factory = MimicNode._node_executor_factory
-        res_cache_exists = (
-            True
-            if self.ne_result_cache[0] is not None and not isinstance(self.ne_result_cache[0], EndOfFlowException)
-            else False
-        )
-        if self.__use_cache(self.init_args_cache, *iargs, **ikwargs) and self.__use_cache(
-            self.ne_param_cache, *nargs, **nkwargs and res_cache_exists
-        ):
-            logging.info("Using cached NodeExecutor for %s", self.__class__.__name__)
-            result, s_data = self.ne_result_cache  # type: ignore
-            factory.copy_call(s_data)  # type: ignore
-        else:
-            self.init_args_cache = self.init_args
-            self.ne_param_cache: CreationDict = {
-                "args": (pre_node_process_args, pre_raw_nodes),
-                "kwargs": {},
-            }
-            node_executor = factory.create_node_executor(self, pre_node_process_args, pre_raw_nodes)
-            result, s_data = node_executor.execute(factory.save_call)
-            self.ne_result_cache: tuple[Any, SavedImagesDict] = (result, copy.deepcopy(s_data))
-            node_executor.save_data.update(s_data)
-            if isinstance(result, EndOfFlowException):
-                raise result
-        return result
 
     class ClassParam(Generic[N, M]):
         """A class parameter wrapper for MimicNode."""
@@ -417,16 +350,37 @@ class MimicNode(ABC, Generic[T, M]):
             return target_method is not parent_method
 
     @classmethod
+    def set_node_executor_factory(
+        cls,
+        ne_class: Type[Q],
+        save_data: SavedImagesDict,
+        save_call: Optional[Callable[[SavedImagesDict, Tensor, str], None]],
+        copy_call: Optional[Callable[[SavedImagesDict], None]],
+    ) -> None:
+        """
+        Gets or creates the NodeExecutorFactory singleton.
+
+        Returns:
+            NodeExecutorFactory: The NodeExecutorFactory instance.
+        """
+        MimicNode._node_executor_factory = MimicNode.NodeExecutorFactory(ne_class, save_data, save_call, copy_call)
+
+    @classmethod
+    def has_node_executor_factory(cls) -> bool:
+        """
+        Checks if the NodeExecutorFactory singleton exists.
+
+        Returns:
+            bool: True if the NodeExecutorFactory exists, False otherwise.
+        """
+        return MimicNode._node_executor_factory is not None
+
+    @classmethod
     def build_class_param(
         cls: Type[M], result_class: Type[N], processor: Callable[[N], dict[str, Any]]
     ) -> ClassParam[N, M]:
         """Returns a class parameter wrapper."""
         return cls.ClassParam(cls, result_class, processor)
-
-    @classmethod
-    @abstractmethod
-    def _class_param_definitions(cls) -> list[ClassParam[N, M]]:
-        """Defines class parameters for the mimic node."""
 
     @classmethod
     def _eject_class_params(cls) -> None:
@@ -435,23 +389,6 @@ class MimicNode(ABC, Generic[T, M]):
             raise TypeError("_class_param_definitions must return a list of ClassParam instances.")
         for cp in cls_params:
             cp.process()
-
-    def process_args_dict(self, *args, **kwargs) -> dict[str, Any]:
-        """
-        Given args and kwargs, returns a dict mapping parameter names to values for _process_impl.
-        Useful for introspection, serialization, or dynamic invocation.
-        """
-        sig = inspect.signature(self._process_impl)
-        bound = sig.bind_partial(*args, **kwargs)
-        bound.apply_defaults()
-        return dict(bound.arguments)
-
-    @classmethod
-    @abstractmethod
-    def key(cls) -> str:
-        """Returns the key for the mimic node."""
-
-    _current_model: Optional[M] = None
 
     @classmethod
     def _get_current_model(cls, tp: Type[N]) -> N:
@@ -486,6 +423,258 @@ class MimicNode(ABC, Generic[T, M]):
         if exists and not isinstance(MimicNode._current_model, t):
             raise TypeError(f"Current model is not of type {t.__name__}.")
         return exists
+
+    @classmethod
+    @abstractmethod
+    def _class_param_definitions(cls) -> list[ClassParam[N, M]]:
+        """Defines class parameters for the mimic node."""
+
+    @classmethod
+    @abstractmethod
+    def key(cls) -> str:
+        """Returns the key for the mimic node."""
+
+    @property
+    def init_args(self) -> CreationDict:
+        """Returns a mutable dictionary of the initialization arguments used."""
+        return self._init_args
+
+    @init_args.deleter
+    def init_args(self) -> None:
+        """Deletes the cached init arguments."""
+        self._init_args = {}
+
+    @property
+    def exec_args(self) -> dict[str, Any]:
+        """Returns the last execution arguments used."""
+        return self._exec_args
+
+    @property
+    def last_output(self) -> Optional[Any]:
+        """Returns the last outputs produced."""
+        return self._last_output
+
+    @property
+    def save_tensor(self) -> Optional[Callable[[Tensor, str], None]]:
+        """Returns a function to save the tensor."""
+        return self._save_tensor
+
+    @property
+    def unsaved_tensors(self) -> list[tuple[Tensor, str]]:
+        """Returns a list of unsaved tensors."""
+        return self._unsaved_tensors
+
+    @save_tensor.setter
+    def save_tensor(self, value: Callable[[Tensor, str], None]) -> None:
+        """Sets the function to save the tensor."""
+        assert callable(value), "save_tensor must be a callable function."
+        self._save_tensor = value
+
+    @save_tensor.deleter
+    def save_tensor(self) -> None:
+        """Deletes the save tensor function."""
+        self._save_tensor = None
+
+    @property
+    def raw_materials(self) -> CreationDict:
+        """Returns a immutable dictionary of the raw materials used."""
+        return copy.deepcopy(self._raw_materials)
+
+    @raw_materials.setter
+    def raw_materials(self, value: CreationDict) -> None:
+        """Sets the raw materials used."""
+        self._raw_materials = copy.deepcopy(value)
+
+    @property
+    def init_args_cache(self) -> Optional[CreationDict]:
+        """Returns the raw materials used to create this mimic node."""
+        return self._init_args_cache
+
+    @init_args_cache.setter
+    def init_args_cache(self, value: CreationDict) -> None:
+        """Sets the raw materials used to create this mimic node."""
+        if not value:
+            raise ValueError("init_args_cache value cannot be None or empty.")
+        self._init_args_cache = value
+
+    @property
+    def ne_param_cache(self) -> Optional[CreationDict]:
+        """Returns the NodeExecutor parameters cache."""
+        return self._ne_param_cache
+
+    @ne_param_cache.setter
+    def ne_param_cache(self, value: CreationDict) -> None:
+        """Sets the NodeExecutor parameters cache."""
+        if not value:
+            raise ValueError("ne_param_cache value cannot be None or empty.")
+        self._ne_param_cache = value
+
+    @property
+    def ne_result_cache(self) -> Optional[tuple[Any, SavedImagesDict]]:
+        """Returns the NodeExecutor result cache."""
+        return self._ne_result_cache
+
+    @ne_result_cache.setter
+    def ne_result_cache(self, value: tuple[Any, SavedImagesDict]) -> None:
+        """Sets the NodeExecutor result cache."""
+        if not value:
+            raise ValueError("ne_result_cache value cannot be None or empty.")
+        if not isinstance(value, tuple) or len(value) != 2:
+            raise ValueError("ne_result_cache value must be a tuple of (result, save_data).")
+        self._ne_result_cache = value
+
+    def process_args_dict(self, *args, **kwargs) -> dict[str, Any]:
+        """
+        Given args and kwargs, returns a dict mapping parameter names to values for _process_impl.
+        Useful for introspection, serialization, or dynamic invocation.
+        """
+        sig = inspect.signature(self._process_impl)
+        bound = sig.bind_partial(*args, **kwargs)
+        bound.apply_defaults()
+        return dict(bound.arguments)
+
+    @final
+    def exec_node_spawn(
+        self: M,
+        pre_node_process_args: dict[str, Any],
+        pre_raw_nodes: dict[type[M], dict[str, Any]],
+    ) -> T:
+        """
+        Executes the mimic node in a separate process using spawn method.
+
+        Args:
+            pre_node_process_args (dict[str, Any]): Pre-processed node arguments.
+            pre_raw_nodes (dict[type[MimicNode], dict[str, Any]]): Pre-processed raw nodes.
+        Returns:
+            None
+        """
+        logging.info("████████████████  >>>>>>>>>>>>> %s <<<<<<<<<<<<<  ████████████████", self.key())
+        if not MimicNode.has_node_executor_factory():
+            raise RuntimeError(
+                "NodeExecutorFactory is not initialized for MimicNode, cannot exec_node_spawn. "
+                "Initialize it first by calling MimicNode.set_node_executor_factory."
+            )
+        pre_raw_for_cache = {k.key(): copy.copy(v) for k, v in copy.copy(pre_raw_nodes).items()}
+        pre_raw_for_cache.update(copy.deepcopy(pre_node_process_args))
+        iargs = self.init_args["args"]
+        ikwargs = self.init_args["kwargs"]
+        nargs = ()
+        nkwargs = pre_raw_for_cache
+        factory = MimicNode._node_executor_factory
+        use_init_cache: bool = self.__use_cache(self.init_args_cache, *iargs, **ikwargs)
+        use_ne_cache: bool = self.__use_cache(self.ne_param_cache, *nargs, **nkwargs)
+        res_cache_exists: bool = bool(
+            self.ne_result_cache[0] is not None and not isinstance(self.ne_result_cache[0], EndOfFlowException)
+        )
+        if use_init_cache and use_ne_cache and res_cache_exists:
+            logging.info("Using cached NodeExecutor for %s", self.__class__.__name__)
+            result, s_data = self.ne_result_cache  # type: ignore
+            factory.copy_call(s_data)  # type: ignore
+        else:
+            self.init_args_cache = self.init_args
+            self.ne_param_cache: CreationDict = {
+                "args": (),
+                "kwargs": pre_raw_for_cache,
+            }
+            node_executor = factory.create_node_executor(self, pre_node_process_args, pre_raw_nodes)
+            result, s_data = node_executor.execute(factory.save_call)
+            ex = None
+            if isinstance(result, EndOfFlowException):
+                ex = result
+                result: T = ex.result
+            self.ne_result_cache: tuple[Any, SavedImagesDict] = copy.deepcopy((result, s_data))
+            node_executor.save_data.update(s_data)
+            if ex:
+                raise ex
+        return result
+
+    @final
+    def update(self, *args, **kwargs) -> None:
+        """Updates the node."""
+        try:
+            if not self._init_args or not self.__use_cache(self._init_args, *args, **kwargs):
+                logging.info("Updating %s", self.__class__.__name__)
+                uw_args, uw_kwargs = self._unwrap_data_dict(*args, **kwargs)
+                self._update_impl(*uw_args, **uw_kwargs)
+                self._init_args = {"args": args, "kwargs": kwargs}
+                self._last_output = None
+        except Exception as e:
+            logging.exception("Error updating %s: %s", self.__class__.__name__, str(e))
+            raise e
+
+    @final
+    def process(self, *args, **kwargs) -> T:
+        """Processes data and returns the result, using caching if available."""
+        if self._return_cache and self._last_output is not None and self.__use_cache(self._exec_args, *args, **kwargs):
+            logging.info("====== Using cached output for %s ======", self.__class__.__name__)
+            return self._last_output
+        self._return_cache = False
+        logging.info("====== Processing %s ======", self.__class__.key())
+        uw_args, uw_kwargs = self._unwrap_data_dict(*args, **kwargs)
+        res: T = None
+        try:
+            res = self._feed_function(self._process_impl, *uw_args, **uw_kwargs)
+            self.save_all_unsaved_tensors()
+        except EndOfFlowException as eof:
+            eof.result = res
+            raise eof
+        except Exception as e:
+            logging.exception("Error processing %s: %s", self.__class__.__name__, str(e))
+            raise e
+        self._exec_args = {"args": args, "kwargs": kwargs}
+        self._last_output = res
+        self._return_cache = True
+        return res
+
+    @final
+    def add_unsaved_tensor(self, tensor: Tensor, name: str) -> None:
+        """Adds a tensor to the unsaved tensors list."""
+        self._unsaved_tensors.append((tensor, name))
+
+    @final
+    def save_all_unsaved_tensors(self) -> None:
+        """Saves all unsaved tensors using the save_tensor function."""
+        if self._unsaved_tensors:
+            if self._save_tensor is None or not callable(self._save_tensor):
+                raise RuntimeError("save_tensor function is not set, cannot save unsaved tensors.")
+            if not isinstance(self._unsaved_tensors, list):
+                raise RuntimeError("unsaved_tensors is not a list, cannot save unsaved tensors.")
+            eof: Optional[EndOfFlowException] = None
+            for tensor, name in self._unsaved_tensors:
+                try:
+                    self._save_tensor(tensor, name)
+                except EndOfFlowException as ex:
+                    logging.info("EndOfFlowException encountered while saving tensors: %s", str(ex))
+                    eof = ex
+            del self._unsaved_tensors
+            if eof:
+                raise eof
+
+    def _upload_image(self, image_name: str) -> Tensor:
+        """Uploads an image given its name."""
+        assert image_name, "Image name must be provided for ControlNetImgPreprocessor."
+        logging.info("Loading %s Image...", self.__class__.key())
+        input_folder = folder_paths.get_input_directory()
+        image_path = os.path.join(input_folder, image_name)
+        img = node_helpers.pillow(Image.open, image_path)
+
+        # Process image to tensor (similar to LoadImage node)
+        output_images = []
+        for i in ImageSequence.Iterator(img):
+            i = node_helpers.pillow(ImageOps.exif_transpose, i)
+            if i.mode == "I":
+                i = i.point(lambda i: i * (1 / 255))
+            image = i.convert("RGB")
+            image = np.array(image).astype(np.float32) / 255.0
+            image = torch.from_numpy(image)[None,]
+            output_images.append(image)
+
+        if len(output_images) > 1:
+            # If multiple frames, stack them? For now assume single image as per workflow
+            img_tensor = torch.cat(output_images, dim=0)
+        else:
+            img_tensor = output_images[0]
+        return img_tensor
 
     def _unwrap_data_dict(self, *args, **kwargs) -> tuple[list[Any], dict[str, Any]]:
         """Unwraps any DataWrapper instances in the provided dictionary."""
@@ -523,147 +712,6 @@ class MimicNode(ABC, Generic[T, M]):
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters or k in extra_params}
         return func(*args, **filtered_kwargs)
 
-    @property
-    def init_args(self) -> CreationDict:
-        """Returns a mutable dictionary of the initialization arguments used."""
-        return self._init_args
-
-    @init_args.deleter
-    def init_args(self) -> None:
-        """Deletes the cached init arguments."""
-        self._init_args = {}
-
-    @property
-    def exec_args(self) -> dict[str, Any]:
-        """Returns the last execution arguments used."""
-        return self._exec_args
-
-    @property
-    def last_output(self) -> Optional[Any]:
-        """Returns the last outputs produced."""
-        return self._last_output
-
-    @property
-    def save_tensor(self) -> Optional[Callable[[Tensor, str], None]]:
-        """Returns a function to save the tensor."""
-        return self._save_tensor
-
-    @save_tensor.setter
-    def save_tensor(self, value: Callable[[Tensor, str], None]) -> None:
-        """Sets the function to save the tensor."""
-        assert callable(value), "save_tensor must be a callable function."
-        self._save_tensor = value
-
-    @save_tensor.deleter
-    def save_tensor(self) -> None:
-        """Deletes the save tensor function."""
-        self._save_tensor = None
-
-    @property
-    def raw_materials(self) -> CreationDict:
-        """Returns a immutable dictionary of the raw materials used."""
-        return copy.deepcopy(self._raw_materials)
-
-    @raw_materials.setter
-    def raw_materials(self, value: CreationDict) -> None:
-        """Sets the raw materials used."""
-        self._raw_materials = copy.deepcopy(value)
-
-    def __init_subclass__(cls, **kwargs) -> None:
-        super().__init_subclass__(**kwargs)
-        if not inspect.isabstract(cls):
-            cls._eject_class_params()
-            cls.process = wraps(cls._process_impl)(cls.process)
-
-    def __new__(cls, *args, **kwargs):
-        """
-        Sets raw materials value on instance creation.
-        """
-        instance = super().__new__(cls)
-        cls.exec_node_spawn = wraps(cls._process_impl)(cls.exec_node_spawn)
-        # Store raw materials for reconstruction
-        instance._raw_materials = {"args": copy.deepcopy(args), "kwargs": copy.deepcopy(kwargs)}
-        return instance
-
-    def __init__(self):
-        self._save_tensor: Optional[Callable[[Tensor, str], None]] = None
-        self._return_cache = False
-        self._init_args: dict[str, Any] = {}
-        self._exec_args: dict[str, Any] = {}
-        self._last_output: Optional[Any] = None
-        self._ne_param_cache: Optional[CreationDict] = EMPTY_CREATION_DICT
-        self._init_args_cache: Optional[CreationDict] = EMPTY_CREATION_DICT
-        self._ne_result_cache: tuple[Any, SavedImagesDict] = (None, {"created_images": [], "last_saved_to_temp": None})
-
-    def _upload_image(self, image_name: str) -> Tensor:
-        """Uploads an image given its name."""
-        assert image_name, "Image name must be provided for ControlNetImgPreprocessor."
-        logging.info("Loading %s Image...", self.__class__.key())
-        input_folder = folder_paths.get_input_directory()
-        image_path = os.path.join(input_folder, image_name)
-        img = node_helpers.pillow(Image.open, image_path)
-
-        # Process image to tensor (similar to LoadImage node)
-        output_images = []
-        for i in ImageSequence.Iterator(img):
-            i = node_helpers.pillow(ImageOps.exif_transpose, i)
-            if i.mode == "I":
-                i = i.point(lambda i: i * (1 / 255))
-            image = i.convert("RGB")
-            image = np.array(image).astype(np.float32) / 255.0
-            image = torch.from_numpy(image)[None,]
-            output_images.append(image)
-
-        if len(output_images) > 1:
-            # If multiple frames, stack them? For now assume single image as per workflow
-            img_tensor = torch.cat(output_images, dim=0)
-        else:
-            img_tensor = output_images[0]
-        return img_tensor
-
-    @final
-    def update(self, *args, **kwargs) -> None:
-        """Updates the node."""
-        try:
-            if not self._init_args or not self.__use_cache(self._init_args, *args, **kwargs):
-                logging.info("Updating %s", self.__class__.__name__)
-                uw_args, uw_kwargs = self._unwrap_data_dict(*args, **kwargs)
-                self._update_impl(*uw_args, **uw_kwargs)
-                self._init_args = {"args": args, "kwargs": kwargs}
-                self._last_output = None
-        except Exception as e:
-            logging.exception("Error updating %s: %s", self.__class__.__name__, str(e))
-            raise e
-
-    @abstractmethod
-    def _update_impl(self, *args, **kwargs) -> None:
-        """Abstract method to update the node."""
-
-    @abstractmethod
-    def _process_impl(self, *args, **kwargs) -> T:
-        """Abstract method to process data."""
-
-    @final
-    def process(self, *args, **kwargs) -> T:
-        """Processes data and returns the result, using caching if available."""
-        if self._return_cache and self._last_output is not None and self.__use_cache(self._exec_args, *args, **kwargs):
-            logging.info("====== Using cached output for %s ======", self.__class__.__name__)
-            return self._last_output
-        self._return_cache = False
-        logging.info("====== Processing %s ======", self.__class__.key())
-        uw_args, uw_kwargs = self._unwrap_data_dict(*args, **kwargs)
-        try:
-            res = self._feed_function(self._process_impl, *uw_args, **uw_kwargs)
-        except EndOfFlowException as eof:
-            res = eof
-        except Exception as e:
-            logging.exception("Error processing %s: %s", self.__class__.__name__, str(e))
-            raise e
-        self._exec_args = {"args": args, "kwargs": kwargs}
-        self._last_output = res
-        self._return_cache = True
-        return res
-
     def __use_cache(self, cached_args: CreationDict, *args, **kwargs) -> bool:
         """Evaluates whether to use cached output based on the provided arguments."""
         cache_invalid: bool = False
@@ -687,300 +735,37 @@ class MimicNode(ABC, Generic[T, M]):
                     break
         return not cache_invalid
 
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        if not inspect.isabstract(cls):
+            cls._eject_class_params()
+            cls.process = wraps(cls._process_impl)(cls.process)
 
-def _is_unserializable_callable(obj: Any) -> bool:
-    """
-    Check if obj is a callable that cannot be pickled.
-
-    Lambdas, local functions, and closures typically cannot be pickled
-    because they reference local scope that pickle cannot capture.
-    """
-
-    if not callable(obj):
-        return False
-
-    # Check if it's a lambda (name is '<lambda>')
-    if isinstance(obj, types.FunctionType):
-        if obj.__name__ == "<lambda>":
-            return True
-        # Check if it's a local/nested function (has '<locals>' in qualname)
-        if obj.__qualname__ and "<locals>" in obj.__qualname__:
-            return True
-
-    # Check for bound methods with unserializable functions
-    if isinstance(obj, types.MethodType):
-        return _is_unserializable_callable(obj.__func__)
-
-    # partial objects wrapping unserializable functions
-    if isinstance(obj, partial):
-        return _is_unserializable_callable(obj.func)
-
-    return False
-
-
-def prepare_for_serialization(obj: T, memo: dict[int, Any] | None = None) -> T:
-    """
-    Recursively prepares objects for pickle serialization.
-
-    - Moves tensors to CPU, detaches from computation graph, and clones
-    - Replaces unserializable callables (lambdas, local functions) with None
-    """
-    if memo is None:
-        memo = {}
-
-    obj_id = id(obj)
-    if obj_id in memo:
-        return memo[obj_id]
-
-    # Handle unserializable callables first (lambdas, local functions, etc.)
-    if _is_unserializable_callable(obj):
-        memo[obj_id] = None
-        return None
-
-    if isinstance(obj, torch.Tensor):
-        # detach() removes from computation graph, clone() creates independent memory,
-        # contiguous() ensures memory layout is standard for pickle
-        res = obj.detach().cpu().clone().contiguous()
-        # res.share_memory_()
-        memo[obj_id] = res
-        return res
-    if isinstance(obj, dict):
-        res = {}
-        memo[obj_id] = res
-        for k, v in obj.items():
-            res[k] = prepare_for_serialization(v, memo)
-        return res
-    if isinstance(obj, list):
-        res = []
-        memo[obj_id] = res
-        for x in obj:
-            res.append(prepare_for_serialization(x, memo))
-        return res
-    if isinstance(obj, (tuple, set)):
-        cls = type(obj)
-        res = cls(prepare_for_serialization(x, memo) for x in obj)
-        memo[obj_id] = res
-        return res
-    if hasattr(obj, "__dict__") and not isinstance(obj, type):
-        # For custom objects, recursively process their attributes
-        memo[obj_id] = obj
-        for k, v in list(obj.__dict__.items()):
-            setattr(obj, k, prepare_for_serialization(v, memo))
-        return obj
-    memo[obj_id] = obj
-    return obj
-
-
-def _node_executor_target(
-    node_cls: type[MimicNode],
-    node_init_args: CreationDict,
-    node_exec_args: dict[str, Any],
-    raw_nodes_serialized: dict[str, tuple[type[MimicNode], CreationDict]],
-    save_call: Optional[Callable[[SavedImagesDict, Tensor, str], None]],
-    save_data: SavedImagesDict,
-    result_queue: mlp.Queue,
-) -> None:
-    """
-    Top-level function to execute a MimicNode in a child process.
-
-    This function is pickle-able because it's defined at module level.
-    It receives only serializable data (classes + dicts), not instances with callbacks.
-    """
-    try:
-        assert (
-            "last_saved_to_temp" in save_data and "created_images" in save_data
-        ), "Data dict must contain 'last_saved_to_temp' and 'created_images' keys."
-        logging.info("Executing %s in child process", node_cls.__name__)
-        # Reconstruct the main node from its class and init args
-        node = node_cls(*node_init_args["args"], **node_init_args["kwargs"])
-        node.save_tensor = lambda tensor, identifier=node.__class__.key(), data=save_data: save_call(
-            data, tensor, identifier
-        )
-
-        # Reconstruct raw_nodes and add them to exec_args
-        for key, (cls, init_args) in raw_nodes_serialized.items():
-            assert "args" in init_args and "kwargs" in init_args, "init_args must contain 'args' and 'kwargs' keys"
-            node_exec_args[key] = cls(*init_args["args"], **init_args["kwargs"])
-
-        # Execute the node
-        output = node.process(**node_exec_args)
-
-        # Prepare tensors for serialization: move to CPU, detach from graph, clone
-        output = prepare_for_serialization(output)
-
-        logging.info("Putting result in queue... Output type: %s", type(output))
-
-        # Validate serialization before putting in queue (queue.put uses background thread
-        # that swallows pickle errors silently)
-        try:
-            dumped_data = pickle.dumps(output)  # Test serialization
-            logging.info("Result serialization test successful, size: %d kb", len(dumped_data) // 1024)
-        except Exception as pickle_err:
-            logging.exception("Failed to serialize result: %s", pickle_err)
-            result_queue.put(("error", save_data, RuntimeError(f"Serialization failed: {pickle_err}")))
-            return
-
-        result_tuple = ("success", save_data, output)
-
-        result_queue.put(result_tuple)
-        logging.info("Result successfully put in queue.")
-        signal.pause()
-    except Exception as e:
-        logging.exception("Error executing %s in child process", node_cls.__name__)
-        result_queue.put(("error", save_data, e))
-
-
-class NodeExecutor:
-    """Class to execute mimic nodes with multiprocessing support."""
-
-    @property
-    def raw_nodes(self) -> dict[str, tuple[type[MimicNode], dict[str, Any]]]:
-        """Get the list of raw mimic nodes."""
-        return self._raw_nodes
-
-    @property
-    def node(self) -> MimicNode:
-        """Get the mimic node."""
-        return self._node
-
-    @property
-    def node_process_args(self) -> dict[str, Any]:
-        """Get the node arguments."""
-        return self._node_process_args
-
-    @property
-    def result_queue(self) -> mlp.Queue:
-        """Get the multiprocessing queue."""
-        return self._result_queue
-
-    @property
-    def save_data(self) -> SavedImagesDict:
-        """Get the save data dictionary."""
-        return self._save_data
-
-    def __init__(
-        self,
-        node: MimicNode,
-        pre_node_process_args: dict[str, Any],
-        pre_raw_nodes: dict[type[MimicNode], dict[str, Any]],
-        save_data: SavedImagesDict,
-    ):
-        self._save_data: SavedImagesDict = save_data
-        self._node: MimicNode = node
-        self._node_process_args: dict[str, Any] = {}
-        for key, value in pre_node_process_args.items():
-            # move tensors to CPU so they can be pickled
-            if isinstance(value, Tensor):
-                self._node_process_args[key] = value.cpu()
-            if isinstance(value, MimicNode):
-                del value.save_tensor
-            else:
-                self._node_process_args[key] = value
-        self._result_queue: mlp.Queue = p_logger.get_mp_context().Queue()
-        self._log_queue: mlp.Queue = p_logger.get_log_queue()
-        self._raw_nodes: dict[str, tuple[type[MimicNode], dict[str, Any]]] = {
-            t.key(): (t, args) for t, args in pre_raw_nodes.items()
-        }
-        self._process: Optional[mlp.Process] = None
-
-    def execute(
-        self,
-        save_call: Optional[Callable[[SavedImagesDict, Tensor, str], None]] = None,
-        timeout: Optional[float] = None,
-        poll_interval: float = 0.05,
-    ) -> tuple[Any, SavedImagesDict]:
+    def __new__(cls, *args, **kwargs):
         """
-        Execute the node in a child process and return the result.
-
-        Args:
-            timeout: Maximum time to wait for result (None = wait forever).
-            poll_interval: How often to poll the log queue while waiting.
-
-        Returns:
-            The output from node.process().
-
-        Raises:
-            Exception: If the child process raised an exception.
-            TimeoutError: If timeout is reached.
+        Sets raw materials value on instance creation.
         """
-        raw_init_args = self._node.init_args
-        init_args = {"args": [], "kwargs": {}}
-        for val in raw_init_args["args"]:
-            if isinstance(val, Tensor):
-                init_args["args"].append(val.cpu())
-            elif isinstance(val, MimicNode):
-                del val.save_tensor
-            else:
-                init_args["args"].append(val)
-        for key, val in raw_init_args["kwargs"].items():
-            if isinstance(val, Tensor):
-                init_args["kwargs"][key] = val.cpu()
-            elif isinstance(val, MimicNode):
-                del val.save_tensor
-            else:
-                init_args["kwargs"][key] = val
+        instance = super().__new__(cls)
+        cls.exec_node_spawn = wraps(cls._process_impl)(cls.exec_node_spawn)
+        # Store raw materials for reconstruction
+        instance._raw_materials = {"args": copy.deepcopy(args), "kwargs": copy.deepcopy(kwargs)}
+        return instance
 
-        worker_target = partial(
-            _node_executor_target,
-            self._node.__class__,
-            self._node.init_args,
-            self._node_process_args,
-            self._raw_nodes,
-            save_call,
-            self._save_data,
-        )
-        self._process = p_logger.get_mp_context().Process(
-            target=c_logger.worker_wrapper,
-            name=f"MimicNodeExecutor-{self._node.__class__.__name__}",
-            args=(worker_target, self._log_queue, self._result_queue),
-        )
-        self._process.start()
+    def __init__(self):
+        self._save_tensor: Optional[Callable[[Tensor, str], None]] = None
+        self._return_cache = False
+        self._unsaved_tensors: list[tuple[Tensor, str]] = []
+        self._init_args: dict[str, Any] = {}
+        self._exec_args: dict[str, Any] = {}
+        self._last_output: Optional[Any] = None
+        self._ne_param_cache: Optional[CreationDict] = get_empty_creation_dict()
+        self._init_args_cache: Optional[CreationDict] = get_empty_creation_dict()
+        self._ne_result_cache: tuple[Any, SavedImagesDict] = (None, {"created_images": [], "last_saved_to_temp": None})
 
-        # Poll log queue while waiting for result
-        start_time = time.time()
+    @abstractmethod
+    def _update_impl(self, *args, **kwargs) -> None:
+        """Abstract method to update the node."""
 
-        while self._process.is_alive() and self._result_queue.empty():
-            # Check timeout
-            if timeout is not None and (time.time() - start_time) > timeout:
-                self._process.terminate()
-                self._process.join(timeout=5)
-                raise TimeoutError(f"Node execution timed out after {timeout}s")
-
-            time.sleep(poll_interval)
-
-        # Get result from queue
-        if self._result_queue.empty():
-            logging.error("No result returned from child process for %s", self._node.__class__.__name__)
-            raise RuntimeError("Child process ended without returning a result")
-        s_data: SavedImagesDict
-        status, s_data, result = self._result_queue.get()
-
-        logging.info("ending child process for %s", self._node.__class__.__name__)
-        self._process.terminate()
-        self._process.join(timeout=5)
-
-        if status == "error":
-            logging.error("Child process raised an exception for %s", self._node.__class__.__name__)
-            raise result
-
-        logging.info("Node %s executed successfully in child process", self._node.__class__.__name__)
-
-        return result, s_data
-
-    @classmethod
-    def _executable(
-        cls,
-        node: MimicNode,
-        node_exec_args: dict[str, Any],
-        queue: mlp.Queue,
-        raw_nodes: dict[MimicNode, dict[str, Any]],
-    ) -> None:
-        """Executes the node and puts the result in the queue."""
-        try:
-            for t, args in raw_nodes.items():
-                node_exec_args[t.key()] = t(**args)
-            output = node.process(**node_exec_args)
-            queue.put(output)
-        except Exception as e:
-            logging.exception("Error executing %s", node.__class__.key())
-            queue.put(e)
+    @abstractmethod
+    def _process_impl(self, *args, **kwargs) -> T:
+        """Abstract method to process data."""

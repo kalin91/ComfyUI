@@ -44,8 +44,7 @@ class ControlNetImgPreprocessor(Generic[T, M], MimicNode[T, M], ABC):
     def _process_impl(self) -> T:
         """Processes the image and returns a tensor."""
         res = self._tensor_impl(self._controlnet_img)
-        if self._save_tensor:
-            self._save_tensor(res)
+        self.add_unsaved_tensor(res, self.key())
         return res
 
     @abstractmethod
@@ -81,10 +80,10 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         return "apply_control_net"
 
     @property
-    def target(self) -> ControlNetImgPreprocessor:
+    def target(self) -> Optional[ControlNetImgPreprocessor]:
         """Returns the target ControlNet image preprocessor."""
         if self._target is None:
-            raise ValueError("Target ControlNet image preprocessor is not set.")
+            logging.warning("ApplyControlNet target is None.")
         return self._target
 
     CNET_CACHE: Optional[ControlNet] = None
@@ -161,6 +160,8 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         """
         vae: VAE = model.vae
         assert type(cond_pos) is type(cond_neg), "cond_pos and cond_neg must be of the same type"
+        if self.target is None:
+            raise ValueError("ApplyControlNet target is None.")
         control_nets: list[str] = [self.target.controlnet_path]
         cnet_attrs_pos: list[torch.Tensor] = []
         cnet_attrs_neg: list[torch.Tensor] = []
@@ -176,8 +177,6 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
             cond_neg = cond_neg.get()
 
         image_tensor: torch.Tensor = self.target.tensor()
-
-        self._save_tensor(image_tensor, self.target.key())
 
         logging.info("Loading ControlNet...")
         controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self.target.controlnet_path)
@@ -288,6 +287,8 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         self._start_percentage = start_percentage
         self._end_percentage = end_percentage
         self._target = target_cls(**target_args) if not target_args.get("skip", False) else None
+        if self._target:
+            self._target.add_unsaved_tensor = self.add_unsaved_tensor
 
     def __init__(
         self,

@@ -237,6 +237,8 @@ class EmptyLatent(MimicNode[torch.Tensor, "EmptyLatent"]):
                 # Permute back: [B, C, H, W] -> [B, H, W, C]
                 start_img = start_img.permute(0, 2, 3, 1)
 
+            self.add_unsaved_tensor(start_img, "start_image")
+
             logging.info("Encoding start image to latent space with VAE...")
             latent = vae.encode(start_img)
             logging.info("Encoded latent shape: %s", latent.shape)
@@ -244,10 +246,21 @@ class EmptyLatent(MimicNode[torch.Tensor, "EmptyLatent"]):
             return latent
 
         logging.info("Creating empty latent %sx%s...", self._width, self._height)
-        return torch.zeros(
+        img = torch.zeros(
             [self._batch_size, 16, self._height // 8, self._width // 8],
             device=comfy.model_management.intermediate_device(),
         )
+        images = vae.decode(img.clone())
+        logging.info("VAE Output Shape: %s", images.shape)
+
+        # Ensure BHWC (Batch, Height, Width, Channels)
+        if images.shape[1] == 3:
+            images = images.movedim(1, -1)
+
+        logging.info("Final Image Shape: %s", images.shape)
+
+        self.add_unsaved_tensor(images, self.key())
+        return img
 
     # pylint: disable=W0221
     # pylint: disable=W0201
@@ -321,7 +334,7 @@ class Rotator(MimicNode[Tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tenso
         logging.info("Rotated image shape: %s", rotated_images.shape)
 
         result_fun = partial(Rotator._undo_rotate, angle=self._angle, orig_h=orig_h, orig_w=orig_w)
-        self._save_tensor(rotated_images, "rotated_image")
+        self.add_unsaved_tensor(rotated_images, "rotated_image")
 
         return rotated_images, result_fun
 

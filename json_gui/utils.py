@@ -6,7 +6,7 @@ import logging
 import shutil
 from functools import partial
 from abc import ABC, abstractmethod
-from typing import Callable
+from typing import Any, Callable
 import json_gui.server as __  # noqa: F401, E402 pylint: disable=C0413
 import folder_paths
 import torch
@@ -124,6 +124,8 @@ def save_image(
             if os.path.exists(sampler_file_name):
                 j += 1
                 continue  # Skip if already exists
+            if isinstance(image, torch.Tensor) and image.requires_grad:
+                image = image.detach()
             img_np = 255.0 * image.cpu().numpy()
             img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
             img_pil.save(sampler_file_name)
@@ -291,6 +293,15 @@ class AbsFlow(ABC):
 
 class EndOfFlowException(Exception):
     """Custom exception to indicate the end of a flow process."""
+
+    @property
+    def result(self) -> Any:
+        """Returns the number of steps after which the flow ended."""
+        return self._result
+
+    @result.setter
+    def result(self, value: Any) -> None:
+        self._result = value
 
     def __init__(self, steps: int) -> None:
         self.steps = steps
