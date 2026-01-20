@@ -13,7 +13,7 @@ from typing import Any, Callable, Optional
 from PIL import Image, ImageTk
 import json_gui.utils as gui_utils
 from json_gui.json_manager.scroll_utils import bind_frame_scroll_events, bind_scroll_events
-from json_gui.constants import COMBO_CONSTANTS, JSON_CANVAS_NAME, JSON_SCROLL_FRAME_NAME
+from json_gui.constants import get_combo_constants, JSON_CANVAS_NAME, JSON_SCROLL_FRAME_NAME
 
 
 def open_preview(file_path: str, frame: ttk.Widget) -> None:
@@ -279,10 +279,10 @@ def _create_combo_entry(
         if "values" in body[key]:
             combo_values = body[key]["values"]
         else:
-            assert body[key]["constant"] in COMBO_CONSTANTS, (
+            assert body[key]["constant"] in get_combo_constants(), (
                 f"Constant '{body[key]['constant']}' not found " f"in constants dictionary for combo type key '{key}'"
             )
-            combo_values = COMBO_CONSTANTS[body[key]["constant"]]
+            combo_values = get_combo_constants()[body[key]["constant"]]
         combo = ttk.Combobox(frame, width=57, state="readonly")
         combo["values"] = combo_values
         if value in combo_values:

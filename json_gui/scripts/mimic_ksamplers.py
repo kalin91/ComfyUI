@@ -9,7 +9,6 @@ from segment_anything.build_sam import Sam
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
 from comfy_extras.nodes_mask import MaskToImage
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
-from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader, FaceDetailer
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
 from json_gui.scripts.mimic_classes import SkipLayers, Sd3Clip
 from json_gui.scripts.mimic import MimicNode
@@ -266,12 +265,31 @@ class FaceDetailerNode(KSamplerLike[torch.Tensor, "FaceDetailerNode"]):
         )
         return base_dict
 
-    # pylint: disable=W0221
+    # pylint: disable=W0221,C0415
     def _process_impl(  # type: ignore[override]
         self, input_image: torch.Tensor, positive: Any, negative: Any, node_model: SkipLayers, node_clip: Sd3Clip
     ) -> torch.Tensor:
-        """Function to process image once rotated."""
+        """
+        Processes the input image using FaceDetailer, returning the detailed image.
+        It uses the provided model, clip, and other parameters to enhance facial details.
+        Lazily loads the SAM model and BBOX detector due to their heavy initialization.
+
+        Args:
+            input_image (torch.Tensor): The input image tensor.
+            positive (Any): The positive conditioning.
+            negative (Any): The negative conditioning.
+            node_model (SkipLayers): The SkipLayers model.
+            node_clip (Sd3Clip): The Sd3Clip instance.
+
+        Raises:
+            e: Exception raised during processing.
+            ValueError: Raised if unexpected arguments are passed to FaceDetailer.doit.
+
+        Returns:
+            torch.Tensor: The processed image tensor.
+        """
         try:
+            from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader, FaceDetailer
 
             bbox_provider = UltralyticsDetectorProvider()
             # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)

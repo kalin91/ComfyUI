@@ -7,7 +7,6 @@ import shutil
 from functools import partial
 from abc import ABC, abstractmethod
 from typing import Any, Callable
-import json_gui.server as __  # noqa: F401, E402 pylint: disable=C0413
 import folder_paths
 import torch
 from PIL import Image

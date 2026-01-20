@@ -5,10 +5,8 @@ It'll display a simple Tkinter messagebox while mocked server is starting.
 
 import tkinter as tk
 from tkinter import ttk
+from typing import Callable
 import utils as _  # noqa: F401
-import comfy.options
-
-comfy.options.enable_args_parsing()
 
 
 def show_loading(parent, message="Loading MockServer...") -> tk.Toplevel:
@@ -34,19 +32,19 @@ class MockServer:
         self.routes = self
         self.last_node_id = "mock_node_id"
 
-    def post(self, _route) -> callable:
+    def post(self, _route) -> Callable:
         """Mocked post decorator."""
 
-        def decorator(func) -> callable:
+        def decorator(func) -> Callable:
             """Return the original function without modification."""
             return func
 
         return decorator
 
-    def get(self, _route) -> callable:
+    def get(self, _route) -> Callable:
         """Mocked get decorator."""
 
-        def decorator(func) -> callable:
+        def decorator(func) -> Callable:
             """Return the original function without modification."""
             return func
 
