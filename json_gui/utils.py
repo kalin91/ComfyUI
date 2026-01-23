@@ -2,6 +2,7 @@
 
 import os
 import re
+import types
 import logging
 import shutil
 from functools import partial
@@ -13,6 +14,36 @@ from PIL import Image
 import numpy as np
 
 from json_gui.typedicts import SavedImagesDict
+
+
+def is_unserializable_callable(obj: Any) -> bool:
+    """
+    Check if obj is a callable that cannot be pickled.
+
+    Lambdas, local functions, and closures typically cannot be pickled
+    because they reference local scope that pickle cannot capture.
+    """
+
+    if not callable(obj):
+        return False
+
+    # Check if it's a lambda (name is '<lambda>')
+    if isinstance(obj, types.FunctionType):
+        if obj.__name__ == "<lambda>":
+            return True
+        # Check if it's a local/nested function (has '<locals>' in qualname)
+        if obj.__qualname__ and "<locals>" in obj.__qualname__:
+            return True
+
+    # Check for bound methods with unserializable functions
+    if isinstance(obj, types.MethodType):
+        return is_unserializable_callable(obj.__func__)
+
+    # partial objects wrapping unserializable functions
+    if isinstance(obj, partial):
+        return is_unserializable_callable(obj.func)
+
+    return False
 
 
 def get_main_images_path() -> str:

@@ -577,7 +577,7 @@ class MimicNode(ABC, Generic[T, M]):
                 "kwargs": pre_raw_for_cache,
             }
             node_executor = factory.create_node_executor(self, pre_node_process_args, pre_raw_nodes)
-            result, s_data = node_executor.execute(factory.save_call)
+            result, s_data = node_executor.execute(factory.save_call, 120.0)
             ex = None
             if isinstance(result, EndOfFlowException):
                 ex = result
@@ -619,8 +619,9 @@ class MimicNode(ABC, Generic[T, M]):
             eof.result = res
             raise eof
         except Exception as e:
-            logging.exception("Error processing %s: %s", self.__class__.__name__, str(e))
+            logging.exception("====== Error processing %s======\nErr: %s ", self.__class__.__name__, str(e))
             raise e
+        logging.info("====== Finished processing %s ======", self.__class__.key())
         self._exec_args = {"args": args, "kwargs": kwargs}
         self._last_output = res
         self._return_cache = True

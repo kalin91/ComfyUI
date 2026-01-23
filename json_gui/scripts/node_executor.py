@@ -1,57 +1,34 @@
 """Node Executor for Mimic Nodes with Multiprocessing Support."""
 
 import logging
-import types
 import time
 import pickle
 import signal
 from functools import partial
 from typing import Any, Callable, TypeVar, Optional
-from torch import Tensor, multiprocessing as mlp
+from torch import Tensor, multiprocessing as mlp, device
+from comfy.model_management import get_torch_device
 from json_gui import p_logger, c_logger
 from json_gui.typedicts import CreationDict, SavedImagesDict, get_empty_creation_dict
 from json_gui.scripts.mimic_classes import MimicNode
-from json_gui.utils import EndOfFlowException
+from json_gui.utils import EndOfFlowException, is_unserializable_callable
 
 T = TypeVar("T")
 
 
-def _is_unserializable_callable(obj: Any) -> bool:
+
+def _move_tensors_to_device(obj: T, torch_device: device, memo: dict[int, Any] | None = None) -> Optional[T]:
     """
-    Check if obj is a callable that cannot be pickled.
+    Recursively moves torch.Tensors inside an object to the given device.
 
-    Lambdas, local functions, and closures typically cannot be pickled
-    because they reference local scope that pickle cannot capture.
-    """
+    Args:
+        obj (T): The object to process.
+        torch_device (device): The target device to move tensors to.
+        memo (dict[int, Any] | None, optional): A memoization dictionary to avoid processing the same object multiple
+        times. Defaults to None.
 
-    if not callable(obj):
-        return False
-
-    # Check if it's a lambda (name is '<lambda>')
-    if isinstance(obj, types.FunctionType):
-        if obj.__name__ == "<lambda>":
-            return True
-        # Check if it's a local/nested function (has '<locals>' in qualname)
-        if obj.__qualname__ and "<locals>" in obj.__qualname__:
-            return True
-
-    # Check for bound methods with unserializable functions
-    if isinstance(obj, types.MethodType):
-        return _is_unserializable_callable(obj.__func__)
-
-    # partial objects wrapping unserializable functions
-    if isinstance(obj, partial):
-        return _is_unserializable_callable(obj.func)
-
-    return False
-
-
-def prepare_for_serialization(obj: T, memo: dict[int, Any] | None = None) -> Optional[T]:
-    """
-    Recursively prepares objects for pickle serialization.
-
-    - Moves tensors to CPU, detaches from computation graph, and clones
-    - Replaces unserializable callables (lambdas, local functions) with None
+    Returns:
+        Optional[T]: The processed object with tensors moved to the specified device.
     """
     if memo is None:
         memo = {}
@@ -61,14 +38,18 @@ def prepare_for_serialization(obj: T, memo: dict[int, Any] | None = None) -> Opt
         return memo[obj_id]
 
     # Handle unserializable callables first (lambdas, local functions, etc.)
-    if _is_unserializable_callable(obj):
+    if is_unserializable_callable(obj):
         memo[obj_id] = None
         return None
 
     if isinstance(obj, Tensor):
         # detach() removes from computation graph, clone() creates independent memory,
         # contiguous() ensures memory layout is standard for pickle
-        res = obj.detach().cpu().clone().contiguous()
+        if torch_device.type == "cpu":
+            res = obj.detach().cpu().clone().contiguous()
+        else:
+            res = obj.to(torch_device)
+
         # res.share_memory_()
         memo[obj_id] = res
         return res
@@ -76,24 +57,24 @@ def prepare_for_serialization(obj: T, memo: dict[int, Any] | None = None) -> Opt
         res = {}
         memo[obj_id] = res
         for k, v in obj.items():
-            res[k] = prepare_for_serialization(v, memo)
+            res[k] = _move_tensors_to_device(v, torch_device, memo)
         return res
     if isinstance(obj, list):
         res = []
         memo[obj_id] = res
         for x in obj:
-            res.append(prepare_for_serialization(x, memo))
+            res.append(_move_tensors_to_device(x, torch_device, memo))
         return res
     if isinstance(obj, (tuple, set)):
         cls = type(obj)
-        res = cls(prepare_for_serialization(x, memo) for x in obj)
+        res = cls(_move_tensors_to_device(x, torch_device, memo) for x in obj)
         memo[obj_id] = res
         return res
     if hasattr(obj, "__dict__") and not isinstance(obj, type):
         # For custom objects, recursively process their attributes
         memo[obj_id] = obj
         for k, v in list(obj.__dict__.items()):
-            setattr(obj, k, prepare_for_serialization(v, memo))
+            setattr(obj, k, _move_tensors_to_device(v, torch_device, memo))
         return obj
     memo[obj_id] = obj
     return obj
@@ -101,6 +82,29 @@ def prepare_for_serialization(obj: T, memo: dict[int, Any] | None = None) -> Opt
 
 class NodeExecutor:
     """Class to execute mimic nodes with multiprocessing support."""
+
+    @staticmethod
+    def _safe_move_tensors_to_device(obj: T, torch_device: device = device("cpu")) -> T:
+        """
+        Safely moves object's tensors to the specified device, handling exceptions.
+
+        Args:
+            obj (T): The object containing tensors to move.
+            torch_device (device): The target device. Defaults to CPU.
+
+        Returns:
+            T: The object with tensors moved to the specified device.
+        Raises:
+            Exception: If moving the tensors fails.
+        """
+        try:
+            res = _move_tensors_to_device(obj, torch_device)
+            if res is None:
+                raise RuntimeError("Object contains unserializable callables.")
+            return res
+        except Exception as e:
+            logging.exception("Failed to move tensor to device %s", str(torch_device))
+            raise e
 
     @staticmethod
     def _execute_target_node(
@@ -127,6 +131,12 @@ class NodeExecutor:
             tuple[str, SavedImagesDict, Any]: A tuple containing status, save data, and output or exception.
         """
         try:
+            torch_device: device = get_torch_device()
+            if torch_device.type != "cpu":
+                logging.info("Child process moving arguments to device: %s", str(torch_device))
+                node_init_args = NodeExecutor._safe_move_tensors_to_device(node_init_args, torch_device)
+                node_exec_args = NodeExecutor._safe_move_tensors_to_device(node_exec_args, torch_device)
+                raw_nodes_serialized = NodeExecutor._safe_move_tensors_to_device(raw_nodes_serialized, torch_device)
             assert (
                 "last_saved_to_temp" in save_data and "created_images" in save_data
             ), "Data dict must contain 'last_saved_to_temp' and 'created_images' keys."
@@ -195,8 +205,8 @@ class NodeExecutor:
             save_data,
         )
         # Validate serialization before putting in queue (queue.put uses background thread
-        # that swallows pickle errors silently)
-        result_tuple = prepare_for_serialization(output_tuple)
+        # that swallows pickle errors silently) by moving tensors to CPU/detaching/cloning
+        result_tuple = NodeExecutor._safe_move_tensors_to_device(output_tuple)
         if result_tuple is None:
             raise RuntimeError("Result tuple could not be prepared for serialization.")
         logging.info("Putting result in queue... Output type: %s", type(result_tuple[2]).__name__)
@@ -271,8 +281,8 @@ class NodeExecutor:
         Execute the node in a child process and return the result.
 
         Args:
-            timeout: Maximum time to wait for result (None = wait forever).
-            poll_interval: How often to poll the log queue while waiting.
+            timeout: Maximum time to wait for result (None = wait forever) in seconds.
+            poll_interval: How often to poll the result queue in seconds.
 
         Returns:
             The output from node.process().
@@ -312,6 +322,7 @@ class NodeExecutor:
             name=f"MimicNodeExecutor-{self._node.__class__.__name__}",
             args=(worker_target, self._log_queue, self._result_queue),
         )
+        logging.info("Starting child process for %s", self._node.__class__.__name__)
         self._process.start()
 
         # Poll log queue while waiting for result
@@ -325,6 +336,12 @@ class NodeExecutor:
                 raise TimeoutError(f"Node execution timed out after {timeout}s")
 
             time.sleep(poll_interval)
+
+        logging.info(
+            ("===========> Child process for %s has finished or result is available; Duration: %s seconds"),
+            self._node.__class__.__name__,
+            time.time() - start_time,
+        )
 
         # Get result from queue
         if self._result_queue.empty():

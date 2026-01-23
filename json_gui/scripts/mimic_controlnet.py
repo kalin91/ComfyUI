@@ -16,11 +16,70 @@ from custom_nodes.comfyui_controlnet_aux import utils as aux_utils
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.open_pose import OpenposeDetector
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.canny import CannyDetector
 from json_gui.scripts.mimic import MimicNode, DataWrapper
+from json_gui.utils import is_unserializable_callable
 from json_gui.scripts.mimic_classes import SkipLayers, Conditional
 import folder_paths
 
 T = TypeVar("T")
 M = TypeVar("M", bound=MimicNode)
+
+
+def _replace_tensors_with_clones(obj: T, memo: dict[int, Any] | None = None) -> Optional[T]:
+    """
+    Recursively clones torch.Tensors inside an object.
+
+    Args:
+        obj (T): The object to process.
+        memo (dict[int, Any] | None, optional): A memoization dictionary to avoid processing the same object multiple
+        times. Defaults to None.
+
+    Returns:
+        Optional[T]: The processed object with tensors moved to the specified device.
+    """
+    if memo is None:
+        memo = {}
+
+    obj_id = id(obj)
+    if obj_id in memo:
+        return memo[obj_id]
+
+    # Handle unserializable callables first (lambdas, local functions, etc.)
+    if is_unserializable_callable(obj):
+        memo[obj_id] = obj
+        return obj
+
+    if isinstance(obj, torch.Tensor):
+        # detach() removes from computation graph, clone() creates independent memory,
+        res = obj.detach().clone()
+
+        # res.share_memory_()
+        memo[obj_id] = res
+        return res
+    if isinstance(obj, dict):
+        res = {}
+        memo[obj_id] = res
+        for k, v in obj.items():
+            res[k] = _replace_tensors_with_clones(v, memo)
+        return res
+    if isinstance(obj, list):
+        res = []
+        memo[obj_id] = res
+        for x in obj:
+            res.append(_replace_tensors_with_clones(x, memo))
+        return res
+    if isinstance(obj, (tuple, set)):
+        cls = type(obj)
+        res = cls(_replace_tensors_with_clones(x, memo) for x in obj)
+        memo[obj_id] = res
+        return res
+    if hasattr(obj, "__dict__") and not isinstance(obj, type):
+        # For custom objects, recursively process their attributes
+        memo[obj_id] = obj
+        for k, v in list(obj.__dict__.items()):
+            setattr(obj, k, _replace_tensors_with_clones(v, memo))
+        return obj
+    memo[obj_id] = obj
+    return obj
 
 
 class ControlNetImgPreprocessor(Generic[T, M], MimicNode[T, M], ABC):
@@ -79,6 +138,27 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         """Returns the key for the ApplyControlNet."""
         return "apply_control_net"
 
+    @staticmethod
+    def _safe_replace_tensors_with_clones(obj: T) -> T:
+        """
+        Safely replace object's tensors with clones, handling exceptions.
+
+        Args:
+            obj (T): The object containing tensors to clone.
+        Returns:
+            T: The object with tensors replaced by their clones.
+        Raises:
+            Exception: If cloning the tensors fails.
+        """
+        try:
+            res = _replace_tensors_with_clones(obj)
+            if res is None:
+                raise RuntimeError("Object could not be processed for tensor cloning.")
+            return res
+        except Exception as e:
+            logging.exception("Failed to replace tensors with clones.")
+            raise e
+
     @property
     def target(self) -> Optional[ControlNetImgPreprocessor]:
         """Returns the target ControlNet image preprocessor."""
@@ -87,6 +167,59 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         return self._target
 
     CNET_CACHE: Optional[ControlNet] = None
+
+    def _log_pickle_size(self, msg: str, p_input: Any) -> None:
+        """
+        Logs the size of the pickled input.
+
+        Args:
+            msg (str): The message to log.
+            input (Any): The input to pickle.
+
+        Raises:
+            e: If pickling fails.
+        """
+        try:
+            data: bytes = pickle.dumps(p_input)
+            size_kb = len(data) / 1024
+            logging.info(
+                "%s (size: %s KB)",
+                msg,
+                f"{size_kb:.2f}",
+            )
+        except Exception as e:
+            logging.exception("Failed to pickle input for size logging; %s", msg)
+            raise e
+
+    @staticmethod
+    def _compare_instance_attributes(instance_a: Any, instance_b: Any) -> dict[str, tuple[type, Any, bool]]:
+        """
+        Compare attributes (non-recursive) of two instances of the same class.
+
+        Returns:
+            dict[str, tuple[type, Any, bool]]: Mapping of attribute name to a tuple of:
+                (attribute type, value from instance_b, equality flag).
+        """
+        if type(instance_a) is not type(instance_b):
+            raise ValueError("Both instances must be of the same class.")
+
+        attrs_a = vars(instance_a)
+        attrs_b = vars(instance_b)
+
+        result: dict[str, tuple[type, Any, bool]] = {}
+        for attr in sorted(set(attrs_a.keys()) | set(attrs_b.keys())):
+            val_a = attrs_a.get(attr, None)
+            val_b = attrs_b.get(attr, None)
+            attr_type_a = type(val_a) if attr in attrs_a else type(val_b)
+            attr_type_b = type(val_b) if attr in attrs_b else type(val_a)
+            bol: bool
+            if attr_type_a is attr_type_b and attr_type_a is torch.Tensor:
+                bol = (val_a == val_b).all()
+            else:
+                bol = val_a == val_b
+            result[attr] = (attr_type_a, attr_type_b, bol)
+
+        return result
 
     @staticmethod
     def _data_wrapper_call(
@@ -111,13 +244,13 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         cnet_attrs = copy.deepcopy(cnet_attrs)
         controlnet: ControlNet
         controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", controlnet_paths.pop(0))
+        cached: bool = False
         if ApplyControlNet.CNET_CACHE is not None:
             controlnet = copy.copy(ApplyControlNet.CNET_CACHE)
-            for k, v in ((k, v) for k, v in vars(controlnet).items() if isinstance(v, torch.Tensor)):
-                setattr(controlnet, k, v.clone())
+            cached = True
         else:
             controlnet = load_controlnet(controlnet_full_path)
-            # ApplyControlNet.CNET_CACHE = controlnet
+            ApplyControlNet.CNET_CACHE = controlnet
             controlnet.vae = vae
             for k, v in cnet_attrs.pop(0).items():
                 setattr(controlnet, k, v)
@@ -125,10 +258,8 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         for path in controlnet_paths:
             controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", path)
             next_controlnet: ControlNet
-            if ApplyControlNet.CNET_CACHE is not None:
+            if cached:
                 next_controlnet = copy.copy(controlnet.previous_controlnet)
-                for k, v in ((k, v) for k, v in vars(next_controlnet).items() if isinstance(v, torch.Tensor)):
-                    setattr(next_controlnet, k, v.clone())
             else:
                 next_controlnet = load_controlnet(controlnet_full_path)
                 next_controlnet.vae = vae
@@ -136,6 +267,8 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
                 setattr(next_controlnet, k, v)
             controlnet.previous_controlnet = next_controlnet
             controlnet = next_controlnet
+        if cached:
+            first_controlnet = ApplyControlNet._safe_replace_tensors_with_clones(first_controlnet)
         cond[0][1]["control"] = first_controlnet
         # ApplyControlNet.CNET_CACHE = copy.copy(first_controlnet)
         return cond
@@ -192,25 +325,37 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
             self._end_percentage,
             vae,
         )
-
-        main_compare = compare_instance_attributes(conds[0][0][1]["control"], conds[1][0][1]["control"])
-        similar_main = {k: v for k, v in main_compare.items() if v[2]}
-        diffs_main = {k: v for k, v in main_compare.items() if not v[2]}
-        if conds[0][0][1]["control"].previous_controlnet and conds[1][0][1]["control"].previous_controlnet:
-            main_prev = compare_instance_attributes(
-                conds[0][0][1]["control"].previous_controlnet, conds[1][0][1]["control"].previous_controlnet
+        control_1 = conds[0][0][1]["control"]
+        control_2 = conds[1][0][1]["control"]
+        main_compare = self._compare_instance_attributes(control_1, control_2)
+        main_similar = {k: v for k, v in main_compare.items() if v[2]}
+        main_diff = {k: v for k, v in main_compare.items() if not v[2]}
+        if control_1.previous_controlnet and control_2.previous_controlnet:
+            prev_compare = self._compare_instance_attributes(
+                control_1.previous_controlnet, control_2.previous_controlnet
             )
-            similar_prev = {k: v for k, v in main_prev.items() if v[2]}
-            diffs_prev = {k: v for k, v in main_prev.items() if not v[2]}
+            similar_prev = {k: v for k, v in prev_compare.items() if v[2]}
+            prev_diff = {k: v for k, v in prev_compare.items() if not v[2]}
+            prev_contrast: list[tuple[Any, Any]] = []
+            for k in prev_diff:
+                val_1 = control_1.previous_controlnet.__dict__[k]
+                val_2 = control_2.previous_controlnet.__dict__[k]
+                prev_contrast.append((val_1, val_2))
             logging.info(
                 "ControlNet previous_controlnet similar attributes (%s): %s",
                 len(similar_prev),
                 similar_prev.keys(),
             )
+        main_contrast: list[tuple[Any, Any]] = []
+        for k in main_diff:
+            val_1 = control_1.__dict__[k]
+            val_2 = control_2.__dict__[k]
+            main_contrast.append((val_1, val_2))
+
         logging.info(
             "ControlNet main similar attributes (%s): %s",
-            len(similar_main),
-            similar_main.keys(),
+            len(main_similar),
+            main_similar.keys(),
         )
 
         conds = ((conds[0], cnet_attrs_pos), (conds[1], cnet_attrs_neg))
@@ -239,23 +384,12 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
             cnet.previous_controlnet = None
             controlnet.previous_controlnet = None
 
-            compare = compare_instance_attributes(controlnet, cnet)
+            compare = self._compare_instance_attributes(controlnet, cnet)
             diffs = {k: v for k, v in compare.items() if not v[2]}
             attrs: dict[str, Any] = {}
             for k in diffs:
                 attrs[k] = getattr(cnet, k)
-            try:
-                data: bytes = pickle.dumps(attrs)
-                size_kb = len(data) / 1024
-                logging.info(
-                    "ControlNet attributes differences (%s): %s (size: %s KB)",
-                    len(diffs),
-                    diffs.keys(),
-                    f"{size_kb:.2f}",
-                )
-            except Exception as e:
-                logging.exception("Failed to pickle ControlNet attributes differences.")
-                raise e
+            self._log_pickle_size(f"ControlNet attributes differences ({len(diffs)}): {diffs.keys()}", attrs)
             cnet_attrs.insert(0, attrs)
             del cond[0][1]["control"]
             return DataWrapper(
@@ -304,36 +438,6 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
             end_percentage=end_percentage,
             target=target,
         )
-
-
-def compare_instance_attributes(instance_a: Any, instance_b: Any) -> dict[str, tuple[type, Any, bool]]:
-    """
-    Compare attributes (non-recursive) of two instances of the same class.
-
-    Returns:
-        dict[str, tuple[type, Any, bool]]: Mapping of attribute name to a tuple of:
-            (attribute type, value from instance_b, equality flag).
-    """
-    if type(instance_a) is not type(instance_b):
-        raise ValueError("Both instances must be of the same class.")
-
-    attrs_a = vars(instance_a)
-    attrs_b = vars(instance_b)
-
-    result: dict[str, tuple[type, Any, bool]] = {}
-    for attr in sorted(set(attrs_a.keys()) | set(attrs_b.keys())):
-        val_a = attrs_a.get(attr, None)
-        val_b = attrs_b.get(attr, None)
-        attr_type_a = type(val_a) if attr in attrs_a else type(val_b)
-        attr_type_b = type(val_b) if attr in attrs_b else type(val_a)
-        bol: bool
-        if attr_type_a is attr_type_b and attr_type_a is torch.Tensor:
-            bol = (val_a == val_b).all()
-        else:
-            bol = val_a == val_b
-        result[attr] = (attr_type_a, attr_type_b, bol)
-
-    return result
 
 
 class OpenPosePose(ControlNetImgPreprocessor[torch.Tensor, "OpenPosePose"]):

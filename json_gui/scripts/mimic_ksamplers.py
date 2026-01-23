@@ -289,6 +289,7 @@ class FaceDetailerNode(KSamplerLike[torch.Tensor, "FaceDetailerNode"]):
             torch.Tensor: The processed image tensor.
         """
         try:
+            import json_gui.server as _  # noqa: F401
             from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader, FaceDetailer
 
             bbox_provider = UltralyticsDetectorProvider()
