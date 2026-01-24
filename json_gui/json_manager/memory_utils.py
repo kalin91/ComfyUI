@@ -273,8 +273,8 @@ Can load model:  {'✅ YES' if free_cuda > 11 * 1024**3 else '❌ NO - Restart r
             btn_frame,
             text="Clean Memory",
             command=lambda: [
-                cleanup_vram(),  # type: ignore[func-returns-value]
-                _refresh_memory_window(text_widget),  # type: ignore[func-returns-value]
+                cleanup_vram(),
+                _refresh_memory_window(text_widget),
             ],
         ).pack(side="left", padx=5)
 

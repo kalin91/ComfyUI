@@ -266,7 +266,7 @@ class FaceDetailerNode(KSamplerLike[torch.Tensor, "FaceDetailerNode"]):
         return base_dict
 
     # pylint: disable=W0221,C0415
-    def _process_impl(  # type: ignore[override]
+    def _process_impl(
         self, input_image: torch.Tensor, positive: Any, negative: Any, node_model: SkipLayers, node_clip: Sd3Clip
     ) -> torch.Tensor:
         """
@@ -345,7 +345,7 @@ class FaceDetailerNode(KSamplerLike[torch.Tensor, "FaceDetailerNode"]):
 
     # pylint: disable=W0221
     # pylint: disable=W0201
-    def _update_impl_complement(  # type: ignore[override]
+    def _update_impl_complement(
         self,
         guide_size: int,
         guide_size_for: bool,

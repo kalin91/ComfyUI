@@ -205,7 +205,7 @@ class JSONManagerApp:
 
         ttk.Button(controls_frame, text="Refresh JSONs", command=self._refresh_file_list).pack(side="left", padx=5)
         ttk.Button(
-            controls_frame, text="Check Memory", command=lambda: show_memory_details(self)  # type: ignore
+            controls_frame, text="Check Memory", command=lambda: show_memory_details(self)
         ).pack(side="left", padx=5)
 
         # Paned window for editor and images
@@ -267,7 +267,7 @@ class JSONManagerApp:
 
         ttk.Button(actions_frame, text="Execute", command=self._execute).pack(side="right", padx=5)
         ttk.Button(
-            actions_frame, text="Clean Memory", command=lambda ins=self: manual_cleanup(ins)  # type: ignore
+            actions_frame, text="Clean Memory", command=lambda ins=self: manual_cleanup(ins)
         ).pack(side="right", padx=5)
         self.steps_var = tk.IntVar(value=20)
         validate_cmd = (self.root.register(_validate_steps), "%P")
@@ -295,7 +295,7 @@ class JSONManagerApp:
                 steps_entry.set(1)
 
         self.steps_var.trace_add("read", steps_trace_callback)
-        steps_entry.config(textvariable=self.steps_var)  # type: ignore[has-type]
+        steps_entry.config(textvariable=self.steps_var)
         self.image_viewer = ImageViewer(viewer_frame)
         self.image_viewer.pack(side="top", fill="both", expand=True)
         paned.add(viewer_frame, weight=1)
@@ -687,7 +687,7 @@ class JSONManagerApp:
                 logging.error("Memory error: %s", error_msg)
                 self.root.after(
                     0,
-                    lambda msg=error_msg: messagebox.showerror(  # type: ignore
+                    lambda msg=error_msg: messagebox.showerror(
                         "Memory Error", f"{msg}\n\nPlease close and reopen the application."
                     ),
                 )

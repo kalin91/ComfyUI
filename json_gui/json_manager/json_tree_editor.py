@@ -76,7 +76,7 @@ def open_preview(file_path: str, frame: ttk.Widget) -> None:
 
         photo = ImageTk.PhotoImage(img)
         image_item = canvas.create_image(0, 0, anchor="nw", image=photo)
-        canvas.image = photo  # type: ignore # Keep reference
+        canvas.image = photo
 
         # Set initial scrollregion
         canvas.config(scrollregion=(0, 0, img.width, img.height))
@@ -102,7 +102,7 @@ def open_preview(file_path: str, frame: ttk.Widget) -> None:
 
             new_photo = ImageTk.PhotoImage(resized)
             canvas.itemconfig(image_item, image=new_photo)
-            canvas.image = new_photo  # type: ignore # Keep reference
+            canvas.image = new_photo
             canvas.config(scrollregion=(0, 0, new_w, new_h))
             return "break"
 
@@ -359,7 +359,7 @@ def _create_number_validator(
                 """Reset entry to last valid value."""
                 to_val = str(last_value) if to_val is None else to_val
                 entry_widget.set(to_val)
-                entry_widget.config(validate="focusout")  # type: ignore
+                entry_widget.config(validate="focusout")
 
             val_zero: bool = False
             if value in ("", "-", "."):
@@ -381,7 +381,7 @@ def _create_number_validator(
             if val_zero:
                 entry_widget.after_idle(lambda: reset_value(val))
             else:
-                entry_widget.after_idle(lambda: entry_widget.config(validate="focusout"))  # type: ignore
+                entry_widget.after_idle(lambda: entry_widget.config(validate="focusout"))
             return True
         except ValueError:
             entry_widget.after_idle(reset_value)
@@ -439,7 +439,7 @@ def _create_randomize_handler(
                 val = random.randint(int(mn), int(mx))
                 e.set(val)
             else:
-                val = random.uniform(float(mn), float(mx))  # type: ignore
+                val = random.uniform(float(mn), float(mx))
                 e.set(fmt % val)
         except Exception as ex:
             logging.exception("Error setting random value")
@@ -495,7 +495,7 @@ def _create_numeric_entry(
 
         entry.pack(side="left", padx=(0, 5))
         if body[key].get("randomizable", False):
-            entry.config(foreground="blue")  # type: ignore
+            entry.config(foreground="blue")
             ttk.Button(
                 frame,
                 text="Random",
@@ -678,7 +678,7 @@ class JSONTreeEditor(ttk.Frame):
                         frame,
                         text="+ First",
                         font=("Arial", 7),
-                        command=lambda k=full_key, bdef=item_body_def: self._add_array_item(  # type: ignore
+                        command=lambda k=full_key, bdef=item_body_def: self._add_array_item(
                             k, bdef, True
                         ),
                     )
@@ -689,7 +689,7 @@ class JSONTreeEditor(ttk.Frame):
                         frame,
                         text="+ Last",
                         font=("Arial", 7),
-                        command=lambda k=full_key, bdef=item_body_def: self._add_array_item(  # type: ignore
+                        command=lambda k=full_key, bdef=item_body_def: self._add_array_item(
                             k, bdef, False
                         ),
                     )
@@ -710,7 +710,7 @@ class JSONTreeEditor(ttk.Frame):
                             text="Delete",
                             font=("Arial", 7),
                             fg="red",
-                            command=lambda k=full_key, idx=i: self._delete_array_item(k, idx),  # type: ignore
+                            command=lambda k=full_key, idx=i: self._delete_array_item(k, idx),
                         )
                         delete_btn.pack(side="left", padx=(10, 0))
 

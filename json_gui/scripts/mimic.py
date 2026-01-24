@@ -26,10 +26,10 @@ import numpy as np
 import torch
 from torch import Tensor
 from PIL import Image, ImageOps, ImageSequence
+import folder_paths
+import node_helpers
 from json_gui.typedicts import get_empty_creation_dict, CreationDict, SavedImagesDict
 from json_gui.utils import EndOfFlowException
-import node_helpers
-import folder_paths
 
 if TYPE_CHECKING:
     from json_gui.scripts.node_executor import NodeExecutor
@@ -137,7 +137,7 @@ class DataWrapper(Generic[T]):
             data = (builder, args)
             self._builder: Callable[..., T] = builder
         else:
-            self._value: T = value  # type: ignore
+            self._value: T = value
             data = value
 
         if val_type in ("latent_tensor", "image_tensor") and not isinstance(return_type, Tensor):
@@ -568,8 +568,8 @@ class MimicNode(ABC, Generic[T, M]):
         )
         if use_init_cache and use_ne_cache and res_cache_exists:
             logging.info("Using cached NodeExecutor for %s", self.__class__.__name__)
-            result, s_data = self.ne_result_cache  # type: ignore
-            factory.copy_call(s_data)  # type: ignore
+            result, s_data = self.ne_result_cache
+            factory.copy_call(s_data)
         else:
             self.init_args_cache = self.init_args
             self.ne_param_cache: CreationDict = {

@@ -484,7 +484,7 @@ class OpenPosePose(ControlNetImgPreprocessor[torch.Tensor, "OpenPosePose"]):
         return result
 
     # pylint: disable=W0221, W0201
-    def _update_impl(  # type: ignore[override]
+    def _update_impl(
         self,
         image_name: str,
         detect_body: bool,
@@ -568,7 +568,7 @@ class CannyEdge(ControlNetImgPreprocessor[torch.Tensor, "CannyEdge"]):
 
     # pylint: disable=W0221
     # pylint: disable=W0201
-    def _update_impl(  # type: ignore[override]
+    def _update_impl(
         self,
         image_name: str,
         low_threshold: int,

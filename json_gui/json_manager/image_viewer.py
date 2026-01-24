@@ -62,7 +62,7 @@ class ImageViewer(ttk.Frame):
 
                 # if click frame, open image in default viewer
                 for widget in (frame, label, name_label):
-                    callback: Callable[[tk.Event], None] = lambda e, p=path, f=frame: open_preview(p, f)  # type: ignore
+                    callback: Callable[[tk.Event], None] = lambda e, p=path, f=frame: open_preview(p, f)
                     widget.bind("<Button-1>", callback)
 
             except Exception as e:
