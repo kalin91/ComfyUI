@@ -9,11 +9,32 @@ import logging
 import tkinter as tk
 import random
 from tkinter import ttk, messagebox
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 from PIL import Image, ImageTk
 import json_gui.utils as gui_utils
+from json_gui.typedicts import BodyDict, is_bodydict
 from json_gui.json_manager.scroll_utils import bind_frame_scroll_events, bind_scroll_events
 from json_gui.constants import get_combo_constants, JSON_CANVAS_NAME, JSON_SCROLL_FRAME_NAME
+
+
+class StickyCanvas(tk.Canvas):
+    """A Canvas that supports sticky headers/columns."""
+
+    _image: Optional[ImageTk.PhotoImage]
+
+    @property
+    def image(self) -> Optional[ImageTk.PhotoImage]:
+        """Get the current image."""
+        return self._image
+
+    @image.setter
+    def image(self, value: ImageTk.PhotoImage) -> None:
+        """Set the current image."""
+        self._image = value
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._image = None
 
 
 def open_preview(file_path: str, frame: ttk.Widget) -> None:
@@ -65,7 +86,7 @@ def open_preview(file_path: str, frame: ttk.Widget) -> None:
             except Exception:
                 img = img.resize((new_w, new_h))
 
-        canvas = tk.Canvas(container, highlightthickness=0, yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+        canvas = StickyCanvas(container, highlightthickness=0, yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
 
         v_scroll.config(command=canvas.yview)
         h_scroll.config(command=canvas.xview)
@@ -436,11 +457,11 @@ def _create_randomize_handler(
         try:
             on_change()
             if bt == "int":
-                val = random.randint(int(mn), int(mx))
-                e.set(val)
+                vali = random.randint(int(mn), int(mx))
+                e.set(vali)
             else:
-                val = random.uniform(float(mn), float(mx))
-                e.set(fmt % val)
+                valf = random.uniform(float(mn), float(mx))
+                e.set(fmt % valf)
         except Exception as ex:
             logging.exception("Error setting random value")
             raise ex
@@ -515,10 +536,26 @@ def _create_numeric_entry(
 class JSONTreeEditor(ttk.Frame):
     """A hierarchical, editable view for JSON data."""
 
+    _body: Optional[BodyDict]
+
+    @property
+    def body(self) -> BodyDict:
+        """Get the body definition."""
+        if self._body is None:
+            raise ValueError("Try to access body when it is not set")
+        return self._body
+
+    @body.setter
+    def body(self, value: BodyDict) -> None:
+        """Set the body definition."""
+        if not is_bodydict(value):
+            raise ValueError("body must conform to BodyDict structure")
+        self._body = value
+
     def __init__(self, parent: tk.Widget, on_change: Callable[[bool], None], on_refresh: Callable[[], bool]) -> None:
         super().__init__(parent)
         self.data: dict[str, Any] = {}
-        self.body: dict[str, Any] = {}
+        self._body = None
         self.string_entries: dict[str, tk.Entry] = {}
         self.int_entries: dict[str, tk.Entry] = {}
         self.float_entries: dict[str, tk.Entry] = {}
@@ -557,7 +594,7 @@ class JSONTreeEditor(ttk.Frame):
         # Bind mousewheel only when mouse is over this widget
         bind_frame_scroll_events(self, self.canvas, True)
 
-    def load_data(self, data: dict[str, Any], body: dict[str, Any]) -> None:
+    def load_data(self, data: dict[str, Any], body: BodyDict) -> None:
         """Load JSON data into the editor."""
         self.data = data
         self.body = body
@@ -678,9 +715,7 @@ class JSONTreeEditor(ttk.Frame):
                         frame,
                         text="+ First",
                         font=("Arial", 7),
-                        command=lambda k=full_key, bdef=item_body_def: self._add_array_item(
-                            k, bdef, True
-                        ),
+                        command=cast(Callable[[], None],lambda k=full_key, bdef=item_body_def: self._add_array_item(k, bdef, True),)
                     )
                     add_first_btn.pack(side="left", padx=(10, 2))
 
@@ -689,9 +724,7 @@ class JSONTreeEditor(ttk.Frame):
                         frame,
                         text="+ Last",
                         font=("Arial", 7),
-                        command=lambda k=full_key, bdef=item_body_def: self._add_array_item(
-                            k, bdef, False
-                        ),
+                        command=cast(Callable[[], None],lambda k=full_key, bdef=item_body_def: self._add_array_item(k, bdef, False),)
                     )
                     add_last_btn.pack(side="left", padx=2)
 
@@ -710,7 +743,7 @@ class JSONTreeEditor(ttk.Frame):
                             text="Delete",
                             font=("Arial", 7),
                             fg="red",
-                            command=lambda k=full_key, idx=i: self._delete_array_item(k, idx),
+                            command=cast(Callable[[], None],lambda k=full_key, idx=i: self._delete_array_item(k, idx)),
                         )
                         delete_btn.pack(side="left", padx=(10, 0))
 

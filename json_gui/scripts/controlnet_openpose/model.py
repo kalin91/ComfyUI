@@ -79,7 +79,7 @@ class Model:
         cnet_dicts: dict[str, ApplyControlNet] = {}
         for cnet in cnet_list:
             target_name: str = cnet["target"]
-            preprocesors_dict = {t.key(): t for t in [CannyEdge, OpenPosePose]}
+            preprocesors_dict = {cast(MimicNode, t).key(): t for t in [CannyEdge, OpenPosePose]}
             assert target_name in preprocesors_dict, f"Unknown ControlNet target: {target_name}"
             target_type: type = preprocesors_dict[target_name]
             assert target_name not in cnet_dicts, f"Duplicate target {target_name} in apply_control_net."
@@ -113,7 +113,8 @@ class Model:
                 data = json_props[key]
                 if issubclass(prop_type, ApplyControlNet):
                     list_control_net: list[ApplyControlNet] = []
-                    preprocesors_dict = {t.key(): t for t in [CannyEdge, OpenPosePose]}
+                    target_types: list[type[MimicNode]] = [CannyEdge, OpenPosePose]
+                    preprocesors_dict: dict[str, type[MimicNode]] = {t.key(): t for t in target_types}
                     if not isinstance(value, list) or not isinstance(data, list):
                         raise ValueError("Mismatch in types for ApplyControlNet update.")
                     for i, item in enumerate(data):
@@ -124,7 +125,7 @@ class Model:
                         target_name: str = item["target"]
                         target_dict = json_props.pop(target_name)
                         target_type: type = preprocesors_dict[target_name]
-                        if idx_exists and target_name == (node := value[i]).target.key():
+                        if idx_exists and (node := value[i]) is not None and target_name == node.target.key():
                             target_inst = node.target
                             target_inst.update(**target_dict)
                             item["target"] = (target_inst.__class__, target_dict)
@@ -140,8 +141,8 @@ class Model:
                     if is_list:
                         for i, item in enumerate(data):
                             item = cast(dict[str, Any], item)
-                            node = cast(MimicNode, value[i])
-                            node.update(**item)
+                            m_node = cast(MimicNode, value[i])
+                            m_node.update(**item)
                     else:
-                        node = cast(MimicNode, value)
-                        node.update(**data)
+                        m_node = cast(MimicNode, value)
+                        m_node.update(**data)

@@ -3,7 +3,6 @@
 import logging
 import copy
 import uuid
-from functools import wraps
 from typing import (
     Any,
     Callable,
@@ -17,6 +16,7 @@ from typing import (
     get_args,
     final,
     TYPE_CHECKING,
+    Protocol,
 )
 from abc import ABC, abstractmethod
 import os
@@ -28,7 +28,7 @@ from torch import Tensor
 from PIL import Image, ImageOps, ImageSequence
 import folder_paths
 import node_helpers
-from json_gui.typedicts import get_empty_creation_dict, CreationDict, SavedImagesDict
+from json_gui.typedicts import SaveImageCallable, get_empty_creation_dict, CreationDict, SavedImagesDict
 from json_gui.utils import EndOfFlowException
 
 if TYPE_CHECKING:
@@ -40,12 +40,17 @@ P = ParamSpec("P")
 Q = TypeVar("Q", bound="NodeExecutor")
 M = TypeVar("M", bound="MimicNode")
 N = TypeVar("N", bound="MimicNode")  # pylint: disable=C0105
+RES_M = TypeVar("RES_M", bound="MimicNode")
 
 
 class DataWrapper(Generic[T]):
     """A wrapper for data that is built on demand."""
 
     Val_Types = Literal["latent_tensor", "image_tensor", "other"]
+
+    # Instance props
+    _builder: Optional[Callable[..., T]]
+    _value: Optional[T]
 
     @property
     def identifier(self) -> str:
@@ -117,13 +122,14 @@ class DataWrapper(Generic[T]):
         self._val_type = val_type
         self._skip_unwrap = skip_unwrap
         self._args = {}
-        self._builder: Optional[Callable[..., T]] = None
-        self._value: Optional[T] = None
+        self._builder = None
+        self._value = None
 
         # Validate value type
         if val_type not in get_args(self.Val_Types):
             raise ValueError(f"val_type must be one of {get_args(self.Val_Types)}")
 
+        data: Any
         if builder:
             self._args = args if args is not None else {}
 
@@ -149,7 +155,7 @@ class DataWrapper(Generic[T]):
             logging.exception("Failed to serialize arguments for DataWrapper: %s", str(e))
             raise ValueError(f"Arguments for builder must be pickle-serializable: {e}") from e
 
-    def get(self) -> T:
+    def get(self) -> "DataWrapper[T]" | T:
         """
         Could get:
         1. Itself if skip_unwrap is True.
@@ -163,6 +169,8 @@ class DataWrapper(Generic[T]):
             return self
         if self._builder:
             return self._builder(**self._args)
+        if self._value is None:
+            raise RuntimeError("DataWrapper has no value or builder to get the value from.")
         return self._value
 
 
@@ -229,14 +237,29 @@ def safe_reference_compare(var1, var2, _memo: set | None = None) -> bool:
 class MimicNode(ABC, Generic[T, M]):
     """A mimic class for various nodes."""
 
+    # Class props
     _node_executor_factory: Optional["NodeExecutorFactory"] = None
     _current_model: Optional[M] = None
+
+    # Instance props
+    _save_tensor: Optional["MimicNode.SaveTensorCallable"]
+    _init_args: dict[str, Any]
+    _exec_args: dict[str, Any]
+    _last_output: Optional[Any]
+    _ne_param_cache: Optional[CreationDict]
+    _init_args_cache: Optional[CreationDict]
+    _ne_result_cache: tuple[Any, SavedImagesDict]
+
+    class SaveTensorCallable(Protocol):
+        """Protocol for save image callable."""
+
+        def __call__(self, images: torch.Tensor, identifier: str, is_temp: bool = True) -> None: ...
 
     class NodeExecutorFactory(Generic[Q]):
         """Factory class to create NodeExecutor instances."""
 
         @property
-        def save_call(self) -> Callable[[SavedImagesDict, Tensor, str], None]:
+        def save_call(self) -> SaveImageCallable:
             """Returns the save call function."""
             return self._save_call
 
@@ -254,7 +277,7 @@ class MimicNode(ABC, Generic[T, M]):
             self,
             node_executor_cls: Type[Q],
             save_data: SavedImagesDict,
-            save_call: Callable[[SavedImagesDict, Tensor, str], None],
+            save_call: SaveImageCallable,
             copy_call: Optional[Callable[[SavedImagesDict], None]] = None,
         ) -> None:
             self._node_executor_cls: Type[Q] = node_executor_cls
@@ -281,10 +304,12 @@ class MimicNode(ABC, Generic[T, M]):
             """
             return self._node_executor_cls(node, pre_node_process_args, pre_raw_nodes, self._save_data)
 
-    class ClassParam(Generic[N, M]):
+    class ClassParam(Generic[N, RES_M]):
         """A class parameter wrapper for MimicNode."""
 
-        def process(self) -> dict[str, Any]:
+        _implemented: bool
+
+        def process(self) -> None:
             """Process method to be implemented on first use."""
             if self._implemented:
                 raise RuntimeError("process method already implemented for this ClassParam.")
@@ -297,7 +322,7 @@ class MimicNode(ABC, Generic[T, M]):
                     """Wrapper function."""
                     if param not in kwargs:
                         raise TypeError(f"Missing required parameter: {param}")
-                    node: M = kwargs.pop(param)
+                    node: RES_M = cast(RES_M, kwargs.pop(param))
                     additional_params: dict[str, Any] = self._processor(node)
                     kwargs.update(additional_params)
                     return self._target_func(*args, **kwargs)
@@ -323,7 +348,7 @@ class MimicNode(ABC, Generic[T, M]):
                 raise TypeError("ClassParam instances can only be created via MimicNode.build_class_param.")
             return super().__new__(cls)
 
-        def __init__(self, target: Type[N], result_class: Type[M], processor: Callable[[M], dict[str, Any]]) -> None:
+        def __init__(self, target: Type[N], result_class: Type[RES_M], processor: Callable[[RES_M], dict[str, Any]]) -> None:
             assert inspect.isclass(target), "target must be a class."
             assert inspect.isclass(result_class), "result_class must be a class."
             assert callable(processor), "processor must be a callable."
@@ -332,8 +357,8 @@ class MimicNode(ABC, Generic[T, M]):
 
             self._target = target
             self._result_class = result_class
-            self._processor: Callable[[M], dict[str, Any]] = processor
-            self._sign_donator: Callable[P, R] = target._process_impl
+            self._processor: Callable[[RES_M], dict[str, Any]] = processor
+            self._sign_donator: Callable[..., Any] = target._process_impl
             self._implemented = False
             self._target_func = target.process if self._is_process_override() else MimicNode.process
 
@@ -354,7 +379,7 @@ class MimicNode(ABC, Generic[T, M]):
         cls,
         ne_class: Type[Q],
         save_data: SavedImagesDict,
-        save_call: Optional[Callable[[SavedImagesDict, Tensor, str], None]],
+        save_call: SaveImageCallable,
         copy_call: Optional[Callable[[SavedImagesDict], None]],
     ) -> None:
         """
@@ -378,7 +403,7 @@ class MimicNode(ABC, Generic[T, M]):
     @classmethod
     def build_class_param(
         cls: Type[M], result_class: Type[N], processor: Callable[[N], dict[str, Any]]
-    ) -> ClassParam[N, M]:
+    ) -> ClassParam[M, N]:
         """Returns a class parameter wrapper."""
         return cls.ClassParam(cls, result_class, processor)
 
@@ -426,7 +451,7 @@ class MimicNode(ABC, Generic[T, M]):
 
     @classmethod
     @abstractmethod
-    def _class_param_definitions(cls) -> list[ClassParam[N, M]]:
+    def _class_param_definitions(cls) -> list[ClassParam[Any, Any]]:
         """Defines class parameters for the mimic node."""
 
     @classmethod
@@ -455,17 +480,19 @@ class MimicNode(ABC, Generic[T, M]):
         return self._last_output
 
     @property
-    def save_tensor(self) -> Optional[Callable[[Tensor, str], None]]:
-        """Returns a function to save the tensor."""
-        return self._save_tensor
-
-    @property
     def unsaved_tensors(self) -> list[tuple[Tensor, str]]:
         """Returns a list of unsaved tensors."""
         return self._unsaved_tensors
 
+    @property
+    def save_tensor(self) -> SaveTensorCallable:
+        """Returns a function to save the tensor."""
+        if self._save_tensor is None:
+            raise RuntimeError("save_tensor function is not set.")
+        return self._save_tensor
+
     @save_tensor.setter
-    def save_tensor(self, value: Callable[[Tensor, str], None]) -> None:
+    def save_tensor(self, value: SaveTensorCallable) -> None:
         """Sets the function to save the tensor."""
         assert callable(value), "save_tensor must be a callable function."
         self._save_tensor = value
@@ -537,7 +564,7 @@ class MimicNode(ABC, Generic[T, M]):
     def exec_node_spawn(
         self: M,
         pre_node_process_args: dict[str, Any],
-        pre_raw_nodes: dict[type[M], dict[str, Any]],
+        pre_raw_nodes: dict[type[M], CreationDict],
     ) -> T:
         """
         Executes the mimic node in a separate process using spawn method.
@@ -740,19 +767,17 @@ class MimicNode(ABC, Generic[T, M]):
         super().__init_subclass__(**kwargs)
         if not inspect.isabstract(cls):
             cls._eject_class_params()
-            cls.process = wraps(cls._process_impl)(cls.process)
 
     def __new__(cls, *args, **kwargs):
         """
         Sets raw materials value on instance creation.
         """
         instance = super().__new__(cls)
-        cls.exec_node_spawn = wraps(cls._process_impl)(cls.exec_node_spawn)
         # Store raw materials for reconstruction
         instance._raw_materials = {"args": copy.deepcopy(args), "kwargs": copy.deepcopy(kwargs)}
         return instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._save_tensor: Optional[Callable[[Tensor, str], None]] = None
         self._return_cache = False
         self._unsaved_tensors: list[tuple[Tensor, str]] = []

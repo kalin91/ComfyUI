@@ -2,11 +2,12 @@
 
 import logging
 import torch
+import comfy.model_management
 from json_gui.scripts.controlnet_openpose.model import Model
+from json_gui.typedicts import CreationDict
 from json_gui.utils import AbsFlow
 from json_gui.scripts.mimic import MimicNode
 from json_gui.scripts.node_executor import NodeExecutor
-import comfy.model_management
 
 
 class Flow(AbsFlow):
@@ -44,7 +45,7 @@ class Flow(AbsFlow):
         cond_pos, cond_neg = prms_node.exec_node_spawn({}, {})
 
         sd_model = self.input_model.skip_layers_model
-        model_raw: dict[type, dict] = {sd_model.__class__: sd_model.init_args}
+        model_raw: dict[type, CreationDict] = {sd_model.__class__: sd_model.init_args}
 
         latent_image = self.input_model.empty_latent.exec_node_spawn({}, model_raw)
 

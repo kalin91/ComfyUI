@@ -5,7 +5,7 @@ import json
 import os
 import logging
 from pathlib import Path
-from typing import Any, Optional, Type
+from typing import Any, Callable, Optional, Type, cast
 import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
@@ -99,14 +99,17 @@ class JSONManagerApp:
         cleanup_vram()
 
     @property
-    def flow_body(self) -> Optional[BodyDict]:
+    def flow_body(self) -> BodyDict:
         """Get the flow body from the current JSON data."""
+        if self._flow_body is None:
+            raise ValueError("Try to access flow_body when it is not set")
         return self._flow_body
 
     @flow_body.setter
-    def flow_body(self, value: BodyDict) -> None:
+    def flow_body(self, value: Optional[dict[str, Any]]) -> None:
         """Set the flow body."""
-        assert is_bodydict(value), "flow_body must conform to BodyDict structure"
+        if not is_bodydict(value):
+            raise ValueError("flow_body must conform to BodyDict structure")
         self._flow_body = value
 
     @flow_body.deleter
@@ -204,9 +207,9 @@ class JSONManagerApp:
         self.file_combo.bind("<<ComboboxSelected>>", self._on_file_selected)
 
         ttk.Button(controls_frame, text="Refresh JSONs", command=self._refresh_file_list).pack(side="left", padx=5)
-        ttk.Button(
-            controls_frame, text="Check Memory", command=lambda: show_memory_details(self)
-        ).pack(side="left", padx=5)
+        ttk.Button(controls_frame, text="Check Memory", command=lambda: show_memory_details(self)).pack(
+            side="left", padx=5
+        )
 
         # Paned window for editor and images
         paned = ttk.PanedWindow(main_frame, orient="horizontal")
@@ -267,7 +270,7 @@ class JSONManagerApp:
 
         ttk.Button(actions_frame, text="Execute", command=self._execute).pack(side="right", padx=5)
         ttk.Button(
-            actions_frame, text="Clean Memory", command=lambda ins=self: manual_cleanup(ins)
+            actions_frame, text="Clean Memory", command=cast(Callable[..., None], lambda ins=self: manual_cleanup(ins))
         ).pack(side="right", padx=5)
         self.steps_var = tk.IntVar(value=20)
         validate_cmd = (self.root.register(_validate_steps), "%P")
@@ -365,7 +368,7 @@ class JSONManagerApp:
             folders = [
                 f
                 for f in os.listdir(gui_utils.get_scripts_folder_path())
-                if os.path.isdir(os.path.join(gui_utils.get_scripts_folder_path(), f)) and not f.startswith("__")
+                if os.path.isdir(os.path.join(gui_utils.get_scripts_folder_path(), f)) and not f.startswith(("__", "."))
             ]
             folders.sort()
             self.folder_combo["values"] = folders
@@ -687,8 +690,11 @@ class JSONManagerApp:
                 logging.error("Memory error: %s", error_msg)
                 self.root.after(
                     0,
-                    lambda msg=error_msg: messagebox.showerror(
-                        "Memory Error", f"{msg}\n\nPlease close and reopen the application."
+                    cast(
+                        Callable[..., str],
+                        lambda msg=error_msg: messagebox.showerror(
+                            "Memory Error", f"{msg}\n\nPlease close and reopen the application."
+                        ),
                     ),
                 )
                 raise

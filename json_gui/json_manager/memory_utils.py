@@ -1,4 +1,5 @@
 """Utility functions for managing GPU memory in JSON Manager GUI."""
+
 import logging
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -269,13 +270,14 @@ Can load model:  {'✅ YES' if free_cuda > 11 * 1024**3 else '❌ NO - Restart r
             command=lambda: _refresh_memory_window(text_widget),
         ).pack(side="left", padx=5)
 
+        def clean_action() -> None:
+            cleanup_vram()
+            _refresh_memory_window(text_widget)
+
         ttk.Button(
             btn_frame,
             text="Clean Memory",
-            command=lambda: [
-                cleanup_vram(),
-                _refresh_memory_window(text_widget),
-            ],
+            command=clean_action,
         ).pack(side="left", padx=5)
 
         ttk.Button(btn_frame, text="Close", command=detail_window.destroy).pack(side="right", padx=5)

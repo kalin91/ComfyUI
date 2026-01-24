@@ -5,16 +5,15 @@ import time
 import pickle
 import signal
 from functools import partial
-from typing import Any, Callable, TypeVar, Optional
+from typing import Any, Callable, TypeVar, Optional, cast
 from torch import Tensor, multiprocessing as mlp, device
 from comfy.model_management import get_torch_device
 from json_gui import p_logger, c_logger
-from json_gui.typedicts import CreationDict, SavedImagesDict, get_empty_creation_dict
+from json_gui.typedicts import CreationDict, SaveImageCallable, SavedImagesDict, get_empty_creation_dict
 from json_gui.scripts.mimic_classes import MimicNode
 from json_gui.utils import EndOfFlowException, is_unserializable_callable
 
 T = TypeVar("T")
-
 
 
 def _move_tensors_to_device(obj: T, torch_device: device, memo: dict[int, Any] | None = None) -> Optional[T]:
@@ -58,18 +57,18 @@ def _move_tensors_to_device(obj: T, torch_device: device, memo: dict[int, Any] |
         memo[obj_id] = res
         for k, v in obj.items():
             res[k] = _move_tensors_to_device(v, torch_device, memo)
-        return res
+        return cast(T, res)
     if isinstance(obj, list):
         res = []
         memo[obj_id] = res
         for x in obj:
             res.append(_move_tensors_to_device(x, torch_device, memo))
-        return res
+        return cast(T, res)
     if isinstance(obj, (tuple, set)):
         cls = type(obj)
         res = cls(_move_tensors_to_device(x, torch_device, memo) for x in obj)
         memo[obj_id] = res
-        return res
+        return cast(T, res)
     if hasattr(obj, "__dict__") and not isinstance(obj, type):
         # For custom objects, recursively process their attributes
         memo[obj_id] = obj
@@ -222,7 +221,7 @@ class NodeExecutor:
         signal.pause()
 
     @property
-    def raw_nodes(self) -> dict[str, tuple[type[MimicNode], dict[str, Any]]]:
+    def raw_nodes(self) -> dict[str, tuple[type[MimicNode], CreationDict]]:
         """Get the list of raw mimic nodes."""
         return self._raw_nodes
 
@@ -250,7 +249,7 @@ class NodeExecutor:
         self,
         node: MimicNode,
         pre_node_process_args: dict[str, Any],
-        pre_raw_nodes: dict[type[MimicNode], dict[str, Any]],
+        pre_raw_nodes: dict[type[MimicNode], CreationDict],
         save_data: SavedImagesDict,
     ):
         self._save_data: SavedImagesDict = save_data
@@ -266,14 +265,14 @@ class NodeExecutor:
                 self._node_process_args[key] = value
         self._result_queue: mlp.Queue = p_logger.get_mp_context().Queue()
         self._log_queue: mlp.Queue = p_logger.get_log_queue()
-        self._raw_nodes: dict[str, tuple[type[MimicNode], dict[str, Any]]] = {
+        self._raw_nodes: dict[str, tuple[type[MimicNode], CreationDict]] = {
             t.key(): (t, args) for t, args in pre_raw_nodes.items()
         }
         self._process: Optional[mlp.Process] = None
 
     def execute(
         self,
-        save_call: Callable[[SavedImagesDict, Tensor, str], None],
+        save_call: SaveImageCallable,
         timeout: Optional[float] = None,
         poll_interval: float = 0.05,
     ) -> tuple[Any, SavedImagesDict]:
@@ -366,21 +365,3 @@ class NodeExecutor:
         logging.info("Node %s executed successfully in child process", self._node.__class__.__name__)
 
         return result, s_data
-
-    @classmethod
-    def _executable(
-        cls,
-        node: MimicNode,
-        node_exec_args: dict[str, Any],
-        queue: mlp.Queue,
-        raw_nodes: dict[MimicNode, dict[str, Any]],
-    ) -> None:
-        """Executes the node and puts the result in the queue."""
-        try:
-            for t, args in raw_nodes.items():
-                node_exec_args[t.key()] = t(**args)
-            output = node.process(**node_exec_args)
-            queue.put(output)
-        except Exception as e:
-            logging.exception("Error executing %s", node.__class__.key())
-            queue.put(e)

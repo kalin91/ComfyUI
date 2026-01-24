@@ -13,7 +13,7 @@ import torch
 from PIL import Image
 import numpy as np
 
-from json_gui.typedicts import SavedImagesDict
+from json_gui.typedicts import SaveImageCallable, SavedImagesDict
 
 
 def is_unserializable_callable(obj: Any) -> bool:
@@ -229,7 +229,7 @@ class AbsFlow(ABC):
         return self._file_path
 
     @property
-    def save_image(self) -> Callable[[SavedImagesDict, torch.Tensor, str, bool], tuple[bool | dict]]:
+    def save_image(self) -> SaveImageCallable:
         """Returns the save image callback."""
         return self._save_image
 
@@ -259,18 +259,12 @@ class AbsFlow(ABC):
         if files:
             pattern: str = filename + r"_r(\d+)\.json$"
             # Find all matching files and extract the max index
-            indexes = [
-                int(re.search(pattern, os.path.basename(f)).group(1))
-                for f in files
-                if re.search(pattern, os.path.basename(f))
-            ]
+            indexes = [int(m.group(1)) for f in files if (m := re.search(pattern, os.path.basename(f))) is not None]
             if indexes:
                 idx = max(indexes) + 1
         self._file_identifier = f"{filename}_r{idx}"
 
-        self._save_image: Callable[[SavedImagesDict, torch.Tensor, str, bool], tuple[bool | dict]] = partial(
-            save_image, steps=steps, file_identifier=self._file_identifier
-        )
+        self._save_image: SaveImageCallable = partial(save_image, steps=steps, file_identifier=self._file_identifier)
         self._copy_regex_pattern = rf"^{filename}_r\d+"
         self._copy_images: Callable[[SavedImagesDict], None] = partial(
             copy_images,

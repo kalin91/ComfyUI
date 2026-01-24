@@ -1,12 +1,13 @@
 """TypedDicts used in json_gui."""
 
-from typing import Any, Iterable, Optional, TypeGuard, TypedDict
+from typing import Any, Optional, Protocol, TypeGuard, TypedDict
+import torch
 
 
 class CreationDict(TypedDict):
     """Dictionary for expressing creation arguments."""
 
-    args: Iterable[Any]
+    args: list[Any]
     kwargs: dict[str, Any]
 
 
@@ -51,3 +52,9 @@ def is_bodydict(obj: object) -> TypeGuard[BodyDict]:
         if not all(k in v for k in ("type", "isArray", "props")):
             return False
     return True
+
+
+class SaveImageCallable(Protocol):
+    """Protocol for save image callable."""
+
+    def __call__(self, data: SavedImagesDict, images: torch.Tensor, identifier: str, is_temp: bool = True) -> None: ...
