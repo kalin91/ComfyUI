@@ -24,6 +24,7 @@ lint.select = [
 exclude = ["*.ipynb", "**/generated/*.pyi"]
 
 [tool.mypy]
+check_untyped_defs = true
 python_version = "3.12"
 disable_error_code = ["import-untyped","override"]
 mypy_path = "./out"

@@ -2,7 +2,7 @@
 
 import logging
 from functools import partial
-from typing import Any, Callable, Optional, Tuple, cast
+from typing import Any, Callable, Optional, Tuple, cast, Self
 import torch
 import numpy as np
 import comfy.model_management
@@ -16,11 +16,11 @@ from json_gui.scripts.mimic import MimicNode, DataWrapper
 type Conditional = list[tuple[torch.Tensor, dict[str, Any]]]
 
 
-class Sd3Clip(MimicNode[CLIP, "Sd3Clip"]):
+class Sd3Clip(MimicNode[CLIP]):
     """A class representing SD3 CLIP settings."""
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "Sd3Clip"]]:
+    def _class_param_definitions(cls):
         return []  # No class params needed for Prompts
 
     CLIP_G_PATH = "sd35m/clip_g.safetensors"
@@ -34,7 +34,7 @@ class Sd3Clip(MimicNode[CLIP, "Sd3Clip"]):
 
     # pylint: disable=W0201
     # pylint: disable=W0221
-    def _process_impl(self) -> CLIP:
+    def _process_impl(self):
         """Loads the Triple CLIP model."""
         logging.info("Loading CLIPs...")
         clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", self.CLIP_G_PATH)
@@ -55,15 +55,15 @@ class Sd3Clip(MimicNode[CLIP, "Sd3Clip"]):
         self.update()
 
 
-class SkipLayers(MimicNode[Tuple[ModelPatcher, VAE], "SkipLayers"]):
+class SkipLayers(MimicNode[Tuple[ModelPatcher, VAE]]):
     """A class representing skip layer guidance settings."""
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "SkipLayers"]]:
+    def _class_param_definitions(cls):
         return []  # No class params needed for Prompts
 
     @classmethod
-    def key(cls) -> str:
+    def key(cls):
         """Returns the key for the SkipLayers."""
         return "skip_layers_model"
 
@@ -96,7 +96,7 @@ class SkipLayers(MimicNode[Tuple[ModelPatcher, VAE], "SkipLayers"]):
 
     # pylint: disable=W0221
     # pylint: disable=W0201
-    def _process_impl(self) -> Tuple[ModelPatcher, VAE]:
+    def _process_impl(self):
         """Returns the tuned model."""
         # 1. Load Model and VAE
         logging.info("Loading Checkpoint...")
@@ -143,11 +143,11 @@ class SkipLayers(MimicNode[Tuple[ModelPatcher, VAE], "SkipLayers"]):
         self.update(layers=layers, scale=scale, start_percent=start_percent, end_percent=end_percent)
 
 
-class Prompts(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Conditional]], "Prompts"]):
+class Prompts(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Conditional]]]):
     """A class representing positive and negative prompts."""
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "Prompts"]]:
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
         return []  # No class params needed for Prompts
 
     @classmethod
@@ -169,7 +169,10 @@ class Prompts(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Conditional]
         del tokens_pos
         del tokens_neg
         torch.cuda.empty_cache()
-        return tuple(DataWrapper(value=cond, skip_unwrap=False) for cond in (cond_pos, cond_neg))
+        return (
+            DataWrapper(value=cast(Conditional, cond_pos), skip_unwrap=False),
+            DataWrapper(value=cast(Conditional, cond_neg), skip_unwrap=False),
+        )
 
     # pylint: disable=W0221
     # pylint: disable=W0201
@@ -182,12 +185,12 @@ class Prompts(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Conditional]
         self.update(positive=positive, negative=negative)
 
 
-class EmptyLatent(MimicNode[torch.Tensor, "EmptyLatent"]):
+class EmptyLatent(MimicNode[torch.Tensor]):
     """An empty latent class for placeholder purposes."""
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "EmptyLatent"]]:
-        res: list[MimicNode.ClassParam[Any, "EmptyLatent"]] = []
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
+        res: list[MimicNode.ClassParam[Self, Any]] = []
         res.append(
             cls.build_class_param(
                 SkipLayers, lambda inst: cls._set_current_model(inst) or {"vae": cast(SkipLayers, inst).process()[1]}
@@ -275,11 +278,11 @@ class EmptyLatent(MimicNode[torch.Tensor, "EmptyLatent"]):
         self.update(width=width, height=height, batch_size=batch_size, image_name=image_name)
 
 
-class Rotator(MimicNode[Tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]], "Rotator"]):
+class Rotator(MimicNode[Tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]]]):
     """A class representing image rotation settings."""
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "Rotator"]]:
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
         return []  # No class params needed for Prompts
 
     @classmethod

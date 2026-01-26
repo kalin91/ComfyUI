@@ -3,13 +3,11 @@
 from abc import ABC, abstractmethod
 import inspect
 import logging
-from typing import Any, Optional, Tuple, TypeVar, Generic, final
+from typing import Any, Tuple, TypeVar, Generic, final, Self, TypedDict
 import torch
-from segment_anything.build_sam import Sam
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
 from comfy_extras.nodes_mask import MaskToImage
 from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
-from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import subcore
 from json_gui.scripts.mimic_classes import SkipLayers, Sd3Clip
 from json_gui.scripts.mimic import MimicNode
 
@@ -17,12 +15,12 @@ T = TypeVar("T")
 M = TypeVar("M", bound=MimicNode)
 
 
-class KSamplerLike(Generic[T, M], MimicNode[T, M], ABC):
+class KSamplerLike(Generic[T], MimicNode[T], ABC):
     """A simple KSampler class for demonstration purposes."""
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "SimpleKSampler"]]:
-        res: list[MimicNode.ClassParam[Any, "SimpleKSampler"]] = []
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
+        res: list[MimicNode.ClassParam[Self, Any]] = []
         res.append(
             cls.build_class_param(SkipLayers, lambda inst: cls._set_current_model(inst) or {"node_model": inst})
         )
@@ -97,19 +95,20 @@ class KSamplerLike(Generic[T, M], MimicNode[T, M], ABC):
         }
 
 
-class SimpleKSampler(KSamplerLike[Tuple[torch.Tensor, torch.Tensor], "SimpleKSampler"]):
+class SimpleKSampler(KSamplerLike[Tuple[torch.Tensor, torch.Tensor]]):
     """A simple KSampler class for demonstration purposes."""
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "SimpleKSampler"]]:
-        res: list[MimicNode.ClassParam[Any, "SimpleKSampler"]] = []
-        res.append(
-            cls.build_class_param(SkipLayers, lambda inst: cls._set_current_model(inst) or {"node_model": inst})
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
+        res: list[MimicNode.ClassParam[Self, Any]] = []
+        c_param = cls.build_class_param(
+            SkipLayers, processor=lambda inst: cls._set_current_model(inst) or {"node_model": inst}
         )
+        res.append(c_param)
         return res
 
     @classmethod
-    def key(cls) -> str:
+    def key(cls):
         """Returns the key for the SimpleKSampler."""
         return "simple_k_sampler"
 
@@ -198,19 +197,40 @@ class SimpleKSampler(KSamplerLike[Tuple[torch.Tensor, torch.Tensor], "SimpleKSam
             raise e
 
 
-class FaceDetailerNode(KSamplerLike[torch.Tensor, "FaceDetailerNode"]):
+class FaceDetailerParams(TypedDict):
+    """Parameters for FaceDetailerNode."""
+    guide_size: int
+    guide_size_for: bool
+    max_size: int
+    feather: int
+    noise_mask: bool
+    force_inpaint: bool
+    drop_size: int
+    cycle: int
+    bbox_threshold: float
+    bbox_dilation: int
+    bbox_crop_factor: float
+    sam_detection_hint: str
+    sam_dilation: int
+    sam_threshold: float
+    sam_bbox_expansion: int
+    sam_mask_hint_threshold: float
+    sam_mask_hint_use_negative: str
+    wildcard: str
+
+
+class FaceDetailerNode(KSamplerLike["torch.Tensor"]):
     """A class representing face detailer settings.
 
     Note: This class inherits from SimpleKSampler but overrides _process_impl
     to return torch.Tensor instead of Tuple[torch.Tensor, torch.Tensor].
     """
 
-    _sam_model_opt: Optional[Sam] = None
-    _bbox_detector: Optional[subcore.UltraBBoxDetector] = None
+    _params: FaceDetailerParams
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "FaceDetailerNode"]]:
-        res: list[MimicNode.ClassParam[Any, "FaceDetailerNode"]] = []
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
+        res: list[MimicNode.ClassParam[Self, Any]] = []
         res.append(
             cls.build_class_param(
                 SkipLayers, lambda inst: cls._set_current_model(inst) or {"node_model": inst, "node_clip": Sd3Clip()}
@@ -219,50 +239,14 @@ class FaceDetailerNode(KSamplerLike[torch.Tensor, "FaceDetailerNode"]):
         return res
 
     @classmethod
-    def key(cls) -> str:
+    def key(cls):
+        """Returns the key for the FaceDetailerNode."""
         return "face_detailer"
-
-    @property
-    def sam_model_opt(self) -> Sam:
-        """Returns the SAM model option."""
-        if self._sam_model_opt is None:
-            raise ValueError("SAM model option has not been set.")
-        return self._sam_model_opt
-
-    @property
-    def bbox_detector(self) -> subcore.UltraBBoxDetector:
-        """Returns the batch size."""
-        if self._bbox_detector is None:
-            raise ValueError("BBOX detector has not been set.")
-        return self._bbox_detector
 
     def _to_dict(self) -> dict:
         """Converts the FaceDetailer instance to a dictionary."""
         base_dict = super()._to_dict()
-        base_dict.update(
-            {
-                "sam_model_opt": self.sam_model_opt,
-                "bbox_detector": self.bbox_detector,
-                "guide_size": self._guide_size,
-                "guide_size_for": self._guide_size_for,
-                "max_size": self._max_size,
-                "feather": self._feather,
-                "noise_mask": self._noise_mask,
-                "force_inpaint": self._force_inpaint,
-                "drop_size": self._drop_size,
-                "cycle": self._cycle,
-                "bbox_threshold": self._bbox_threshold,
-                "bbox_dilation": self._bbox_dilation,
-                "bbox_crop_factor": self._bbox_crop_factor,
-                "sam_detection_hint": self._sam_detection_hint,
-                "sam_dilation": self._sam_dilation,
-                "sam_threshold": self._sam_threshold,
-                "sam_bbox_expansion": self._sam_bbox_expansion,
-                "sam_mask_hint_threshold": self._sam_mask_hint_threshold,
-                "sam_mask_hint_use_negative": self._sam_mask_hint_use_negative,
-                "wildcard": self._wildcard,
-            }
-        )
+        base_dict.update(self._params)
         return base_dict
 
     # pylint: disable=W0221,C0415
@@ -294,11 +278,11 @@ class FaceDetailerNode(KSamplerLike[torch.Tensor, "FaceDetailerNode"]):
 
             bbox_provider = UltralyticsDetectorProvider()
             # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
-            self._bbox_detector, _c = bbox_provider.doit(self._bbox_detector_str)
+            bbox_detector, _c = bbox_provider.doit(self._bbox_detector_str)
 
             sam_loader = SAMLoader()
             # SAMLoader.load_model returns (SAM_MODEL,)
-            self._sam_model_opt = sam_loader.load_model(self._sam_model_opt_str)[0]
+            sam_model_opt = sam_loader.load_model(self._sam_model_opt_str)[0]
 
             node_model.use_tuned = self.use_tune
             model = node_model.model
@@ -314,6 +298,8 @@ class FaceDetailerNode(KSamplerLike[torch.Tensor, "FaceDetailerNode"]):
 
             face_arguments.update(
                 {
+                    "sam_model_opt": sam_model_opt,
+                    "bbox_detector": bbox_detector,
                     "model": model,
                     "vae": vae,
                     "clip": clip,
@@ -368,24 +354,26 @@ class FaceDetailerNode(KSamplerLike[torch.Tensor, "FaceDetailerNode"]):
         sam_model_opt: str,
         wildcard: str,
     ) -> None:
-        self._guide_size = guide_size
-        self._guide_size_for = guide_size_for
-        self._max_size = max_size
-        self._feather = feather
-        self._noise_mask = noise_mask
-        self._force_inpaint = force_inpaint
-        self._drop_size = drop_size
-        self._cycle = cycle
-        self._bbox_threshold = bbox_threshold
-        self._bbox_dilation = bbox_dilation
-        self._bbox_crop_factor = bbox_crop_factor
-        self._sam_detection_hint = sam_detection_hint
-        self._sam_dilation = sam_dilation
-        self._sam_threshold = sam_threshold
-        self._sam_bbox_expansion = sam_bbox_expansion
-        self._sam_mask_hint_threshold = sam_mask_hint_threshold
-        self._sam_mask_hint_use_negative = sam_mask_hint_use_negative
-        self._wildcard = wildcard
+        self._params: FaceDetailerParams = {
+            "guide_size": guide_size,
+            "guide_size_for": guide_size_for,
+            "max_size": max_size,
+            "feather": feather,
+            "noise_mask": noise_mask,
+            "force_inpaint": force_inpaint,
+            "drop_size": drop_size,
+            "cycle": cycle,
+            "bbox_threshold": bbox_threshold,
+            "bbox_dilation": bbox_dilation,
+            "bbox_crop_factor": bbox_crop_factor,
+            "sam_detection_hint": sam_detection_hint,
+            "sam_dilation": sam_dilation,
+            "sam_threshold": sam_threshold,
+            "sam_bbox_expansion": sam_bbox_expansion,
+            "sam_mask_hint_threshold": sam_mask_hint_threshold,
+            "sam_mask_hint_use_negative": sam_mask_hint_use_negative,
+            "wildcard": wildcard,
+        }
         self._bbox_detector_str = bbox_detector
         self._sam_model_opt_str = sam_model_opt
 

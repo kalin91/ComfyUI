@@ -34,7 +34,7 @@ class Flow(AbsFlow):
         super().__init__(file_path, filename)
         self._input_model: Model = Model(self.json_path)
 
-    def _run_impl(self, steps: int) -> list[str]:
+    def _run_impl(self, steps: int) -> None:
         """Main function to run the ControlNet flow."""
 
         self.set_input_model(steps)
@@ -87,5 +87,3 @@ class Flow(AbsFlow):
         comfy.model_management.soft_empty_cache()
 
         logging.info("Done.")
-
-        return self.saved_data["created_images"]

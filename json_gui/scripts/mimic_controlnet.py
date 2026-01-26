@@ -5,8 +5,9 @@ import pickle
 import copy
 import logging
 from collections import Counter
-from typing import Any, Generic, Optional, Tuple, Type, TypeVar, Union
+from typing import Any, Generic, Optional, Tuple, Type, TypeVar, Union, Self, cast
 import torch
+import folder_paths
 from comfy_extras.nodes_images import ResizeAndPadImage
 from nodes import ControlNetApplyAdvanced
 from comfy.model_management import soft_empty_cache, get_torch_device
@@ -18,7 +19,6 @@ from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.canny import 
 from json_gui.scripts.mimic import MimicNode, DataWrapper
 from json_gui.utils import is_unserializable_callable
 from json_gui.scripts.mimic_classes import SkipLayers, Conditional
-import folder_paths
 
 T = TypeVar("T")
 M = TypeVar("M", bound=MimicNode)
@@ -60,18 +60,18 @@ def _replace_tensors_with_clones(obj: T, memo: dict[int, Any] | None = None) -> 
         memo[obj_id] = res
         for k, v in obj.items():
             res[k] = _replace_tensors_with_clones(v, memo)
-        return res
+        return cast(T, res)
     if isinstance(obj, list):
         res = []
         memo[obj_id] = res
         for x in obj:
             res.append(_replace_tensors_with_clones(x, memo))
-        return res
+        return cast(T, res)
     if isinstance(obj, (tuple, set)):
         cls = type(obj)
         res = cls(_replace_tensors_with_clones(x, memo) for x in obj)
         memo[obj_id] = res
-        return res
+        return cast(T, res)
     if hasattr(obj, "__dict__") and not isinstance(obj, type):
         # For custom objects, recursively process their attributes
         memo[obj_id] = obj
@@ -82,7 +82,7 @@ def _replace_tensors_with_clones(obj: T, memo: dict[int, Any] | None = None) -> 
     return obj
 
 
-class ControlNetImgPreprocessor(Generic[T, M], MimicNode[T, M], ABC):
+class ControlNetImgPreprocessor(Generic[T], MimicNode[T], ABC):
     """Abstract base class for ControlNet image preprocessors."""
 
     @property
@@ -124,12 +124,12 @@ class ControlNetImgPreprocessor(Generic[T, M], MimicNode[T, M], ABC):
         self._controlnet_img = self._upload_image(image_name)
 
 
-class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Conditional]], "ApplyControlNet"]):
+class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Conditional]]]):
     """Returns the ControlNet application parameters."""
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "ApplyControlNet"]]:
-        res: list[MimicNode.ClassParam[Any, "ApplyControlNet"]] = []
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
+        res: list[MimicNode.ClassParam[Self, Any]] = []
         res.append(cls.build_class_param(SkipLayers, lambda inst: cls._set_current_model(inst) or {"model": inst}))
         return res
 
@@ -224,7 +224,7 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
     @staticmethod
     def _data_wrapper_call(
         controlnet_paths: list[str], cond: Conditional, cnet_attrs: list[dict[str, Any]]
-    ) -> DataWrapper[Conditional]:
+    ) -> Conditional:
         """
         Applies the ControlNet model to the given conditional.
 
@@ -279,7 +279,7 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         cond_pos: Union[DataWrapper[Conditional], Conditional],
         cond_neg: Union[DataWrapper[Conditional], Conditional],
         model: SkipLayers,
-    ) -> tuple[DataWrapper[Conditional], DataWrapper[Conditional]]:
+    ):
         """
         Applies the ControlNet model to the given positive and negative conditionals.
 
@@ -289,7 +289,7 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
             model (SkipLayers): The model to use for processing.
 
         Returns:
-            tuple[DataWrapper[Any], DataWrapper[Any]]: The updated conditionals wrapped in DataWrapper instances.
+            tuple[DataWrapper[Conditional], DataWrapper[Conditional]]: The updated conditionals wrapped in DataWrapper instances.
         """
         vae: VAE = model.vae
         assert type(cond_pos) is type(cond_neg), "cond_pos and cond_neg must be of the same type"
@@ -298,7 +298,7 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         control_nets: list[str] = [self.target.controlnet_path]
         cnet_attrs_pos: list[torch.Tensor] = []
         cnet_attrs_neg: list[torch.Tensor] = []
-        if isinstance(cond_pos, DataWrapper):
+        if isinstance(cond_pos, DataWrapper) and isinstance(cond_neg, DataWrapper):
             assert Counter(cond_pos.args.keys()) == Counter(cond_neg.args.keys()), "Mismatched conditionals keys"
             if "controlnet_paths" in cond_pos.args:
                 control_nets.extend(cond_pos.args["controlnet_paths"])
@@ -366,7 +366,7 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
 
         # delete controlnet from conds
 
-        def update_cond(cond: Any, cnet_attrs: list[dict[str, Any]]) -> DataWrapper[Any]:
+        def update_cond(cond: Conditional, cnet_attrs: list[dict[str, Any]]) -> DataWrapper[Conditional]:
             """
             Updates the conditional by removing the controlnet reference and wrapping it.
 
@@ -403,6 +403,8 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
             )
 
         res = tuple(update_cond(*c) for c in conds)
+        if len(res) != 2:
+            raise RuntimeError("ApplyControlNet process did not return two conditionals as expected.")
 
         return res
 
@@ -422,7 +424,7 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         self._end_percentage = end_percentage
         self._target = target_cls(**target_args) if not target_args.get("skip", False) else None
         if self._target:
-            self._target.add_unsaved_tensor = self.add_unsaved_tensor
+            self._target.add_unsaved_tensor = self.add_unsaved_tensor  # type: ignore[method-assign, misc]
 
     def __init__(
         self,
@@ -440,11 +442,11 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         )
 
 
-class OpenPosePose(ControlNetImgPreprocessor[torch.Tensor, "OpenPosePose"]):
+class OpenPosePose(ControlNetImgPreprocessor[torch.Tensor]):
     """A class representing OpenPose pose settings."""
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "OpenPosePose"]]:
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
         return []  # No class params needed for Prompts
 
     @classmethod
@@ -527,11 +529,11 @@ class OpenPosePose(ControlNetImgPreprocessor[torch.Tensor, "OpenPosePose"]):
         )
 
 
-class CannyEdge(ControlNetImgPreprocessor[torch.Tensor, "CannyEdge"]):
+class CannyEdge(ControlNetImgPreprocessor[torch.Tensor]):
     """A class representing Canny edge detector settings."""
 
     @classmethod
-    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Any, "CannyEdge"]]:
+    def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
         return []  # No class params needed for Prompts
 
     @classmethod
