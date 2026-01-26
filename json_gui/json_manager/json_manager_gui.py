@@ -272,6 +272,10 @@ class JSONManagerApp:
         ttk.Button(
             actions_frame, text="Clean Memory", command=cast(Callable[..., None], lambda ins=self: manual_cleanup(ins))
         ).pack(side="right", padx=5)
+        self.multiprocess_var = tk.BooleanVar(value=True)
+        multiprocess_check = ttk.Checkbutton(actions_frame, variable=self.multiprocess_var)
+        multiprocess_check.pack(side="right", padx=(0, 5))
+        ttk.Label(actions_frame, text="Multiprocess:").pack(side="right", padx=(5, 5))
         self.steps_var = tk.IntVar(value=20)
         validate_cmd = (self.root.register(_validate_steps), "%P")
         steps_entry = ttk.Spinbox(
@@ -284,7 +288,7 @@ class JSONManagerApp:
             validate="key",
             validatecommand=validate_cmd,
         )
-        steps_entry.pack(side="right", padx=(0, 10))
+        steps_entry.pack(side="right", padx=(0, 5))
         bind_frame_scroll_events(steps_entry, steps_entry)
         ttk.Label(actions_frame, text="Steps:").pack(side="right", padx=(20, 5))
 
@@ -637,6 +641,7 @@ class JSONManagerApp:
         except ValueError:
             messagebox.showerror("Error", "Steps must be a number")
             return
+        multiprocess = self.multiprocess_var.get()
 
         # Get filename without extension
         foldername = self.folder_var.get()
@@ -670,7 +675,7 @@ class JSONManagerApp:
                     steps,
                 )
 
-                image_paths = inst.run(steps)
+                image_paths = inst.run(steps, multiprocess)
                 # Clean up after execution
                 cleanup_vram()
 

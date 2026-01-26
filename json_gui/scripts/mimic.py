@@ -242,6 +242,7 @@ class MimicNode(ABC, Generic[T]):
     # Class props
     _node_executor_factory: ClassVar[Optional["NodeExecutorFactory"]] = None
     _current_model: ClassVar[Optional["MimicNode"]] = None
+    _do_multiprocess: ClassVar[bool] = False
 
     # Instance props
     _return_cache: bool
@@ -342,8 +343,7 @@ class MimicNode(ABC, Generic[T]):
                 setattr(
                     wrapper,
                     "_mimic_extra_params",
-                    getattr(self._target_func, "_mimic_extra_params", set())  # pylint: disable=W0212
-                    | {param},  # pylint: disable=W0212
+                    getattr(self._target_func, "_mimic_extra_params", set()) | {param},
                 )
 
                 return wrapper
@@ -395,6 +395,7 @@ class MimicNode(ABC, Generic[T]):
         save_data: SavedImagesDict,
         save_call: SaveImageCallable,
         copy_call: Callable[[SavedImagesDict], None],
+        do_multiprocess: bool,
     ) -> None:
         """
         Gets or creates the NodeExecutorFactory singleton.
@@ -403,6 +404,7 @@ class MimicNode(ABC, Generic[T]):
             NodeExecutorFactory: The NodeExecutorFactory instance.
         """
         MimicNode._node_executor_factory = MimicNode.NodeExecutorFactory(ne_class, save_data, save_call, copy_call)
+        MimicNode._do_multiprocess = do_multiprocess
 
     @classmethod
     def _has_node_executor_factory(cls) -> bool:
@@ -427,7 +429,9 @@ class MimicNode(ABC, Generic[T]):
         return MimicNode._node_executor_factory
 
     @classmethod
-    def build_class_param(cls, result_class: Type[RES], processor: Callable[[RES], dict[str, Any]]) -> ClassParam[Self, RES]:
+    def build_class_param(
+        cls, result_class: Type[RES], processor: Callable[[RES], dict[str, Any]]
+    ) -> ClassParam[Self, RES]:
         """Returns a class parameter wrapper."""
         return cls.ClassParam(cls, result_class, processor)
 
@@ -590,7 +594,28 @@ class MimicNode(ABC, Generic[T]):
         return dict(bound.arguments)
 
     @final
-    def exec_node_spawn(
+    def exec_node(
+        self,
+        pre_node_process_args: dict[str, Any],
+        node_params: list["MimicNode"],
+    ) -> T:
+        """
+        Executes the mimic node in the current process.
+
+        Args:
+            pre_node_process_args (dict[str, Any]): Pre-processed node arguments.
+            node_params (list["MimicNode"]): List of mimic node parameters.
+        Returns:
+            T: The result of the node execution.
+        """
+        if MimicNode._do_multiprocess:
+            pre_raw_nodes: dict[type["MimicNode"], CreationDict] = {type(n): n.init_args for n in node_params}
+            return self._exec_node_spawn(pre_node_process_args, pre_raw_nodes)
+        else:
+            raise NotImplementedError("exec_node without multiprocessing is not implemented yet.")
+
+    @final
+    def _exec_node_spawn(
         self,
         pre_node_process_args: dict[str, Any],
         pre_raw_nodes: dict[type["MimicNode"], CreationDict],
@@ -600,9 +625,9 @@ class MimicNode(ABC, Generic[T]):
 
         Args:
             pre_node_process_args (dict[str, Any]): Pre-processed node arguments.
-            pre_raw_nodes (dict[type[MimicNode], dict[str, Any]]): Pre-processed raw nodes.
+            pre_raw_nodes (dict[type["MimicNode"], CreationDict]): Pre-processed raw nodes.
         Returns:
-            None
+            T: The result of the node execution.
         """
         logging.info("████████████████  >>>>>>>>>>>>> %s <<<<<<<<<<<<<  ████████████████", self.key())
         if not MimicNode._has_node_executor_factory():

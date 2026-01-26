@@ -287,8 +287,16 @@ class AbsFlow(ABC):
                 os.remove(os.path.join(folder, f))
                 logging.info("Deleted existing temp file: %s", f)
 
-    def run(self, steps: int) -> list[str]:
-        """Runs the flow and returns a list of created image file paths."""
+    def run(self, steps: int, multiprocess: bool) -> list[str]:
+        """
+        Runs the flow and returns a list of created image file paths.
+        Args:
+            steps (int): Number of steps to run the flow.
+            multiprocess (bool): Whether to use multiprocessing.
+
+        Returns:
+            list[str]: List of created image file paths.
+        """
         # Saving a copy of json file to output directory
         self._saved_data["created_images"].clear()
         self.set_file_vars(steps)
@@ -297,7 +305,7 @@ class AbsFlow(ABC):
         logging.info("Saved flow JSON to output directory: %s", output_json_path)
         with torch.inference_mode():
             try:
-                self._run_impl(steps)
+                self._run_impl(steps, multiprocess)
             except EndOfFlowException as eofe:
                 logging.info("Flow ended early after %d steps.", eofe.steps)
         if self._saved_data["last_saved_to_temp"] is True:
@@ -311,7 +319,7 @@ class AbsFlow(ABC):
         return self._saved_data["created_images"]
 
     @abstractmethod
-    def _run_impl(self, steps: int) -> None:
+    def _run_impl(self, steps: int, multiprocess: bool) -> None:
         """Runs the flow and returns a list of created image file paths."""
 
 

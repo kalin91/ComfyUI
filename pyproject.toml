@@ -66,6 +66,7 @@ max-attributes = 12
 max-line-length = 120
 ignore = [
     "E303", # too many blank lines
+    "E704", # multiple statements on one line (def foo(): bar(); baz())
 ]
 exclude = [
     ".venv",
