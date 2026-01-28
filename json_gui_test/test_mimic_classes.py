@@ -31,7 +31,7 @@ class TestSimpleKSampler:
         assert sampler.sampler_name == "euler"
         assert sampler.scheduler == "normal"
         assert sampler.denoise == 1.0
-        assert sampler.use_tune == False
+        assert sampler.use_tune is False
     
     def test_to_dict(self):
         """Test _to_dict method."""
@@ -174,7 +174,7 @@ class TestControlNetImgPreprocessor:
         
         preprocessor = ConcretePreprocessor(image_name="test.png", skip=False)
         
-        assert preprocessor.skip == False
+        assert preprocessor.skip is False
         assert preprocessor._controlnet_img is not None
         assert isinstance(preprocessor._controlnet_img, torch.Tensor)
     
@@ -339,10 +339,10 @@ class TestOpenPosePose:
             skip=False
         )
         
-        assert openpose.detect_body == True
-        assert openpose.detect_hands == False
-        assert openpose.detect_face == True
-        assert openpose.scale_stick_for_xinsr_cn == False
+        assert openpose.detect_body is True
+        assert openpose.detect_hands is False
+        assert openpose.detect_face is True
+        assert openpose.scale_stick_for_xinsr_cn is False
         assert openpose.resolution == 512
         assert openpose.controlnet_path == "openpose.safetensors"
     
@@ -383,10 +383,10 @@ class TestOpenPosePose:
             # Verify common_annotator_call was called with correct parameters
             mock_call.assert_called_once()
             call_args = mock_call.call_args[1]
-            assert call_args["include_hand"] == True
-            assert call_args["include_face"] == True
-            assert call_args["include_body"] == True
-            assert call_args["xinsr_stick_scaling"] == True
+            assert call_args["include_hand"] is True
+            assert call_args["include_face"] is True
+            assert call_args["include_body"] is True
+            assert call_args["xinsr_stick_scaling"] is True
             assert call_args["resolution"] == 512
             
             assert isinstance(result, torch.Tensor)

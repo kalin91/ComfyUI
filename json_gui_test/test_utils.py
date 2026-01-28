@@ -66,8 +66,8 @@ class TestGetFlowAndBodyPaths:
             # Create flow.py and body.yml
             flow_path = os.path.join(script_dir, "flow.py")
             body_path = os.path.join(script_dir, "body.yml")
-            open(flow_path, "w").close()
-            open(body_path, "w").close()
+            with open(flow_path, "w") as _f: pass
+            with open(body_path, "w") as _f: pass
             
             result = utils.get_flow_and_body_paths(script_name)
             assert result == (flow_path, body_path)
@@ -87,7 +87,7 @@ class TestGetFlowAndBodyPaths:
             
             # Create only body.yml
             body_path = os.path.join(script_dir, "body.yml")
-            open(body_path, "w").close()
+            with open(body_path, "w") as _f: pass
             
             with pytest.raises(AssertionError, match="Flow script .* does not exist"):
                 utils.get_flow_and_body_paths(script_name)
@@ -101,7 +101,7 @@ class TestGetFlowAndBodyPaths:
             
             # Create only flow.py
             flow_path = os.path.join(script_dir, "flow.py")
-            open(flow_path, "w").close()
+            with open(flow_path, "w") as _f: pass
             
             with pytest.raises(AssertionError, match="Body file .* does not exist"):
                 utils.get_flow_and_body_paths(script_name)
