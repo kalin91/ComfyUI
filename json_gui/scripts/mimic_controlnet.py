@@ -289,15 +289,16 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
             model (SkipLayers): The model to use for processing.
 
         Returns:
-            tuple[DataWrapper[Conditional], DataWrapper[Conditional]]: The updated conditionals wrapped in DataWrapper instances.
+            tuple[DataWrapper[Conditional], DataWrapper[Conditional]]: The updated conditionals wrapped
+            in DataWrapper instances.
         """
         vae: VAE = model.vae
         assert type(cond_pos) is type(cond_neg), "cond_pos and cond_neg must be of the same type"
         if self.target is None:
             raise ValueError("ApplyControlNet target is None.")
         control_nets: list[str] = [self.target.controlnet_path]
-        cnet_attrs_pos: list[torch.Tensor] = []
-        cnet_attrs_neg: list[torch.Tensor] = []
+        cnet_attrs_pos: list[Any] = []
+        cnet_attrs_neg: list[Any] = []
         if isinstance(cond_pos, DataWrapper) and isinstance(cond_neg, DataWrapper):
             assert Counter(cond_pos.args.keys()) == Counter(cond_neg.args.keys()), "Mismatched conditionals keys"
             if "controlnet_paths" in cond_pos.args:
@@ -315,7 +316,7 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
         controlnet_full_path = folder_paths.get_full_path_or_raise("controlnet", self.target.controlnet_path)
         controlnet: ControlNet = load_controlnet(controlnet_full_path)
 
-        conds = ControlNetApplyAdvanced().apply_controlnet(
+        conds: Tuple[Conditional, Conditional] = ControlNetApplyAdvanced().apply_controlnet(
             cond_pos,
             cond_neg,
             controlnet,
@@ -325,6 +326,13 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
             self._end_percentage,
             vae,
         )
+
+        # Note: Don't delete controlnet here - it's copied into conds and
+        # will be managed by ComfyUI's memory system via load_models_gpu()
+        del image_tensor
+        if not self.is_multiprocess:
+            return tuple(DataWrapper(value=c, skip_unwrap=False) for c in conds)
+
         control_1 = conds[0][0][1]["control"]
         control_2 = conds[1][0][1]["control"]
         main_compare = self._compare_instance_attributes(control_1, control_2)
@@ -358,11 +366,7 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
             main_similar.keys(),
         )
 
-        conds = ((conds[0], cnet_attrs_pos), (conds[1], cnet_attrs_neg))
-
-        # Note: Don't delete controlnet here - it's copied into conds and
-        # will be managed by ComfyUI's memory system via load_models_gpu()
-        del image_tensor
+        conds_params = ((conds[0], cnet_attrs_pos), (conds[1], cnet_attrs_neg))
 
         # delete controlnet from conds
 
@@ -402,7 +406,7 @@ class ApplyControlNet(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Cond
                 skip_unwrap=True,
             )
 
-        res = tuple(update_cond(*c) for c in conds)
+        res = tuple(update_cond(*c) for c in conds_params)
         if len(res) != 2:
             raise RuntimeError("ApplyControlNet process did not return two conditionals as expected.")
 

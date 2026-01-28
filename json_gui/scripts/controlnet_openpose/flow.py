@@ -53,7 +53,7 @@ class Flow(AbsFlow):
         prms_node = self.input_model.prompts
 
         # Encode Prompts
-        cond_pos, cond_neg = prms_node.exec_node({}, [])
+        cond_pos, cond_neg = prms_node.exec_node({}, [self.input_model.clip])
 
         sd_model = self.input_model.skip_layers_model
 
@@ -86,7 +86,9 @@ class Flow(AbsFlow):
             "negative": cond_neg,
         }
 
-        detailed_image: torch.Tensor = self.input_model.face_detailer.exec_node(input_dict, [sd_model])
+        detailed_image: torch.Tensor = self.input_model.face_detailer.exec_node(
+            input_dict, [sd_model, self.input_model.clip]
+        )
 
         unrotated = unrotator(detailed_image)
 

@@ -36,6 +36,7 @@ def get_empty_creation_dict() -> CreationDict:
     """Returns a new empty CreationDict."""
     return {"args": [], "kwargs": {}}
 
+
 def is_creation_dict(obj: object) -> TypeGuard[CreationDict]:
     """Typeguard for CreationDict."""
     if not isinstance(obj, dict):
@@ -47,6 +48,7 @@ def is_creation_dict(obj: object) -> TypeGuard[CreationDict]:
     if not isinstance(obj["kwargs"], dict):
         return False
     return True
+
 
 def is_empty_creation_dict(obj: object) -> bool:
     """Typeguard for empty CreationDict."""

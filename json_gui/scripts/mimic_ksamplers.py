@@ -3,11 +3,11 @@
 from abc import ABC, abstractmethod
 import inspect
 import logging
-from typing import Any, Tuple, TypeVar, Generic, final, Self, TypedDict
+from typing import Any, Tuple, TypeVar, Generic, final, Self, TypedDict, cast
 import torch
+from comfy.sd import CLIP
 from comfy.sample import fix_empty_latent_channels, prepare_noise, sample
 from comfy_extras.nodes_mask import MaskToImage
-from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
 from json_gui.scripts.mimic_classes import SkipLayers, Sd3Clip
 from json_gui.scripts.mimic import MimicNode
 
@@ -199,6 +199,7 @@ class SimpleKSampler(KSamplerLike[Tuple[torch.Tensor, torch.Tensor]]):
 
 class FaceDetailerParams(TypedDict):
     """Parameters for FaceDetailerNode."""
+
     guide_size: int
     guide_size_for: bool
     max_size: int
@@ -232,8 +233,11 @@ class FaceDetailerNode(KSamplerLike["torch.Tensor"]):
     def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
         res: list[MimicNode.ClassParam[Self, Any]] = []
         res.append(
+            cls.build_class_param(SkipLayers, lambda inst: cls._set_current_model(inst) or {"node_model": inst})
+        )
+        res.append(
             cls.build_class_param(
-                SkipLayers, lambda inst: cls._set_current_model(inst) or {"node_model": inst, "node_clip": Sd3Clip()}
+                Sd3Clip, lambda inst: cast(Sd3Clip, inst).process() or {"clip": cast(Sd3Clip, inst).clip}
             )
         )
         return res
@@ -251,7 +255,7 @@ class FaceDetailerNode(KSamplerLike["torch.Tensor"]):
 
     # pylint: disable=W0221,C0415
     def _process_impl(
-        self, input_image: torch.Tensor, positive: Any, negative: Any, node_model: SkipLayers, node_clip: Sd3Clip
+        self, input_image: torch.Tensor, positive: Any, negative: Any, node_model: SkipLayers, clip: CLIP
     ) -> torch.Tensor:
         """
         Processes the input image using FaceDetailer, returning the detailed image.
@@ -263,7 +267,7 @@ class FaceDetailerNode(KSamplerLike["torch.Tensor"]):
             positive (Any): The positive conditioning.
             negative (Any): The negative conditioning.
             node_model (SkipLayers): The SkipLayers model.
-            node_clip (Sd3Clip): The Sd3Clip instance.
+            clip (CLIP): The loaded CLIP model.
 
         Raises:
             e: Exception raised during processing.
@@ -275,6 +279,7 @@ class FaceDetailerNode(KSamplerLike["torch.Tensor"]):
         try:
             import json_gui.server as _  # noqa: F401
             from custom_nodes.ComfyUI_Impact_Pack.modules.impact.impact_pack import SAMLoader, FaceDetailer
+            from custom_nodes.ComfyUI_Impact_Subpack.modules.subpack_nodes import UltralyticsDetectorProvider
 
             bbox_provider = UltralyticsDetectorProvider()
             # UltralyticsDetectorProvider.doit returns (BBOX_DETECTOR, SEGM_DETECTOR)
@@ -287,7 +292,6 @@ class FaceDetailerNode(KSamplerLike["torch.Tensor"]):
             node_model.use_tuned = self.use_tune
             model = node_model.model
             vae = node_model.vae
-            clip = node_clip.process()
 
             # FaceDetailer
             logging.info("Running FaceDetailer...")

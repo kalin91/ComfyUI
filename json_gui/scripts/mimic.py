@@ -50,9 +50,17 @@ class DataWrapper(Generic[T]):
 
     Val_Types = Literal["latent_tensor", "image_tensor", "other"]
 
+    # Class props
+    _skip_pickle_check: ClassVar[bool] = False
+
     # Instance props
     _builder: Optional[Callable[..., T]]
     _value: Optional[T]
+
+    @staticmethod
+    def skip_pickle_check(value: bool) -> None:
+        """Skip pickle serialization check for DataWrapper arguments."""
+        DataWrapper._skip_pickle_check = value
 
     @property
     def identifier(self) -> str:
@@ -150,12 +158,13 @@ class DataWrapper(Generic[T]):
 
         if val_type in ("latent_tensor", "image_tensor") and not isinstance(return_type, Tensor):
             raise ValueError("Value must be a Tensor for latent_tensor or image_tensor types.")
-        try:
-            data = pickle.dumps(data)
-            logging.info("Arguments for DataWrapper serialized successfully, size: %d bytes", len(data))
-        except Exception as e:
-            logging.exception("Failed to serialize arguments for DataWrapper: %s", str(e))
-            raise ValueError(f"Arguments for builder must be pickle-serializable: {e}") from e
+        if not DataWrapper._skip_pickle_check:
+            try:
+                data = pickle.dumps(data)
+                logging.info("Arguments for DataWrapper serialized successfully, size: %d bytes", len(data))
+            except Exception as e:
+                logging.exception("Failed to serialize arguments for DataWrapper: %s", str(e))
+                raise ValueError(f"Arguments for builder must be pickle-serializable: {e}") from e
 
     def get(self) -> Self | T:
         """
@@ -323,27 +332,23 @@ class MimicNode(ABC, Generic[T]):
 
             param = self._result_class.key()
 
-            def decorator() -> Callable[P, R]:
+            def decorator(param: str = param, func: Callable[..., R] = self._target.process) -> Callable[P, R]:
 
                 def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
                     """Wrapper function."""
-                    args_list = list(args)
+                    logging.info("Processing ClassParam for %s with param %s", self._target.__name__, param)
                     if param not in kwargs:
                         raise TypeError(f"Missing required parameter: {param}")
                     node: RES = cast(RES, kwargs.pop(param))
                     additional_params: dict[str, Any] = self._processor(node)
                     kwargs.update(additional_params)
-                    if not args_list:
-                        raise TypeError("Missing 'self' argument for method call.")
-                    if not isinstance((mimic_self := args_list.pop(0)), MimicNode):
-                        raise TypeError("First argument must be an instance of MimicNode.")
-                    return self._target_func(mimic_self, *args_list, **kwargs)
+                    return func(*args, **kwargs)
 
                 # Register the parameter on the wrapper so _feed_function knows it's allowed
                 setattr(
                     wrapper,
                     "_mimic_extra_params",
-                    getattr(self._target_func, "_mimic_extra_params", set()) | {param},
+                    getattr(self._target.process, "_mimic_extra_params", set()) | {param},
                 )
 
                 return wrapper
@@ -372,9 +377,7 @@ class MimicNode(ABC, Generic[T]):
             self._target = target
             self._result_class = result_class
             self._processor: Callable[[RES], dict[str, Any]] = processor
-            self._sign_donator: Callable[..., Any] = target._process_impl
             self._implemented = False
-            self._target_func = target.process if self._is_process_override() else MimicNode.process
 
         def _is_process_override(self) -> bool:
             """
@@ -387,6 +390,11 @@ class MimicNode(ABC, Generic[T]):
 
             parent_method = MimicNode.process
             return target_method is not parent_method
+
+    @staticmethod
+    def enable_multiprocess():
+        """Enables multiprocess mode for MimicNode."""
+        MimicNode._do_multiprocess = True
 
     @classmethod
     def set_node_executor_factory(
@@ -405,6 +413,7 @@ class MimicNode(ABC, Generic[T]):
         """
         MimicNode._node_executor_factory = MimicNode.NodeExecutorFactory(ne_class, save_data, save_call, copy_call)
         MimicNode._do_multiprocess = do_multiprocess
+        DataWrapper.skip_pickle_check(not do_multiprocess)
 
     @classmethod
     def _has_node_executor_factory(cls) -> bool:
@@ -446,6 +455,8 @@ class MimicNode(ABC, Generic[T]):
     @classmethod
     def _get_current_model(cls, tp: Type[N]) -> N:
         """Returns the Model mimic node class."""
+        if not MimicNode._do_multiprocess:
+            raise RuntimeError("current model is only available in multiprocess mode.")
         if MimicNode._current_model is None:
             raise RuntimeError("No current model set for MimicNode.")
         if not isinstance(MimicNode._current_model, tp):
@@ -455,12 +466,13 @@ class MimicNode(ABC, Generic[T]):
     @classmethod
     def _set_current_model(cls, model: "MimicNode") -> None:
         """Sets the current Model mimic node class."""
-        if MimicNode._current_model is not None:
-            raise RuntimeError("Current model is already set for MimicNode. Override not allowed.")
-        if not isinstance(model, MimicNode):
-            raise TypeError("model must be an instance of MimicNode.")
-        model.process()
-        MimicNode._current_model = model
+        if MimicNode._do_multiprocess or not cls._has_current_model(type(model)):
+            if MimicNode._current_model is not None:
+                raise RuntimeError("Current model is already set for MimicNode. Override not allowed.")
+            if not isinstance(model, MimicNode):
+                raise TypeError("model must be an instance of MimicNode.")
+            model.process()
+            MimicNode._current_model = model
 
     @classmethod
     def _has_current_model(cls, t: Type["MimicNode"]) -> bool:
@@ -510,6 +522,11 @@ class MimicNode(ABC, Generic[T]):
     def unsaved_tensors(self) -> list[tuple[Tensor, str]]:
         """Returns a list of unsaved tensors."""
         return self._unsaved_tensors
+
+    @unsaved_tensors.deleter
+    def unsaved_tensors(self) -> None:
+        """Deletes the cached unsaved tensors."""
+        self._unsaved_tensors.clear()
 
     @property
     def save_tensor(self) -> SaveTensorCallable:
@@ -583,6 +600,11 @@ class MimicNode(ABC, Generic[T]):
             raise ValueError("ne_result_cache value must be a tuple of (result, save_data).")
         self._ne_result_cache = value
 
+    @property
+    def is_multiprocess(self) -> bool:
+        """Check if multiprocessing is enabled."""
+        return MimicNode._do_multiprocess
+
     def process_args_dict(self, *args, **kwargs) -> dict[str, Any]:
         """
         Given args and kwargs, returns a dict mapping parameter names to values for _process_impl.
@@ -608,11 +630,32 @@ class MimicNode(ABC, Generic[T]):
         Returns:
             T: The result of the node execution.
         """
+        logging.info(
+            "████████████████  >>>>>>>>>>>>> %s: (%s_process) <<<<<<<<<<<<<  ████████████████",
+            self.key(),
+            "multi" if MimicNode._do_multiprocess else "single",
+        )
         if MimicNode._do_multiprocess:
             pre_raw_nodes: dict[type["MimicNode"], CreationDict] = {type(n): n.init_args for n in node_params}
             return self._exec_node_spawn(pre_node_process_args, pre_raw_nodes)
         else:
-            raise NotImplementedError("exec_node without multiprocessing is not implemented yet.")
+            pre_node_process_args.update({m.key(): m for m in node_params})
+            return self._exec_node_sync(pre_node_process_args)
+
+    def _exec_node_sync(self, pre_node_process_args: dict[str, Any]) -> T:
+        """
+        Executes the mimic node in the current process without multiprocessing.
+
+        Args:
+            pre_node_process_args (dict[str, Any]): Pre-processed node arguments.
+        Returns:
+            T: The result of the node execution.
+        """
+        factory = MimicNode._get_node_executor_factory()
+        self.save_tensor = lambda tensor, identifier=self.key(), is_temp=True: factory.save_call(
+            factory.save_data, tensor, identifier, is_temp=is_temp
+        )
+        return self.process(**pre_node_process_args)
 
     @final
     def _exec_node_spawn(
@@ -629,7 +672,6 @@ class MimicNode(ABC, Generic[T]):
         Returns:
             T: The result of the node execution.
         """
-        logging.info("████████████████  >>>>>>>>>>>>> %s <<<<<<<<<<<<<  ████████████████", self.key())
         if not MimicNode._has_node_executor_factory():
             raise RuntimeError(
                 "NodeExecutorFactory is not initialized for MimicNode, cannot exec_node_spawn. "
@@ -659,7 +701,7 @@ class MimicNode(ABC, Generic[T]):
                 "kwargs": pre_raw_for_cache,
             }
             node_executor = factory.create_node_executor(self, pre_node_process_args, pre_raw_nodes)
-            result, s_data = node_executor.execute(factory.save_call, 120.0)
+            result, s_data = node_executor.execute(factory.save_call, 150.0)
             ex = None
             if isinstance(result, EndOfFlowException):
                 ex = result
@@ -731,7 +773,7 @@ class MimicNode(ABC, Generic[T]):
                 except EndOfFlowException as ex:
                     logging.info("EndOfFlowException encountered while saving tensors: %s", str(ex))
                     eof = ex
-            del self._unsaved_tensors
+            del self.unsaved_tensors
             if eof:
                 raise eof
 

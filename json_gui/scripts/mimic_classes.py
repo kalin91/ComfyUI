@@ -16,8 +16,10 @@ from json_gui.scripts.mimic import MimicNode, DataWrapper
 type Conditional = list[tuple[torch.Tensor, dict[str, Any]]]
 
 
-class Sd3Clip(MimicNode[CLIP]):
+class Sd3Clip(MimicNode[None]):
     """A class representing SD3 CLIP settings."""
+
+    _clip: Optional[CLIP]
 
     @classmethod
     def _class_param_definitions(cls):
@@ -32,18 +34,26 @@ class Sd3Clip(MimicNode[CLIP]):
         """Returns the key for the Sd3Clip."""
         return "sd3_clip"
 
+    @property
+    def clip(self) -> CLIP:
+        """Returns the loaded CLIP model."""
+        if self._clip is None:
+            raise ValueError("Clip has not been processed yet. Call process() first.")
+        return self._clip
+
     # pylint: disable=W0201
     # pylint: disable=W0221
     def _process_impl(self):
         """Loads the Triple CLIP model."""
-        logging.info("Loading CLIPs...")
-        clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", self.CLIP_G_PATH)
-        clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", self.CLIP_L_PATH)
-        clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", self.T5_PATH)
-        return load_clip(
-            ckpt_paths=[clip_path1, clip_path2, clip_path3],
-            embedding_directory=folder_paths.get_folder_paths("embeddings"),
-        )
+        if self._clip is None:
+            logging.info("Loading CLIPs...")
+            clip_path1 = folder_paths.get_full_path_or_raise("text_encoders", self.CLIP_G_PATH)
+            clip_path2 = folder_paths.get_full_path_or_raise("text_encoders", self.CLIP_L_PATH)
+            clip_path3 = folder_paths.get_full_path_or_raise("text_encoders", self.T5_PATH)
+            self._clip = load_clip(
+                ckpt_paths=[clip_path1, clip_path2, clip_path3],
+                embedding_directory=folder_paths.get_folder_paths("embeddings"),
+            )
 
     # pylint: disable=W0221
     def _update_impl(self) -> None:
@@ -148,7 +158,13 @@ class Prompts(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Conditional]
 
     @classmethod
     def _class_param_definitions(cls) -> list[MimicNode.ClassParam[Self, Any]]:
-        return []  # No class params needed for Prompts
+        res: list[MimicNode.ClassParam[Self, Any]] = []
+        res.append(
+            cls.build_class_param(
+                Sd3Clip, lambda inst: cast(Sd3Clip, inst).process() or {"clip": cast(Sd3Clip, inst).clip}
+            )
+        )
+        return res
 
     @classmethod
     def key(cls) -> str:
@@ -156,9 +172,8 @@ class Prompts(MimicNode[tuple[DataWrapper[Conditional], DataWrapper[Conditional]
         return "prompts"
 
     # pylint: disable=W0221
-    def _process_impl(self) -> tuple[DataWrapper[Conditional], DataWrapper[Conditional]]:
+    def _process_impl(self, clip: CLIP) -> tuple[DataWrapper[Conditional], DataWrapper[Conditional]]:
         """Encodes the positive and negative prompts using the provided CLIP model."""
-        clip: CLIP = Sd3Clip().process()
         logging.info("Encoding prompts...")
         tokens_pos = clip.tokenize(self._positive)
         cond_pos = clip.encode_from_tokens_scheduled(tokens_pos)

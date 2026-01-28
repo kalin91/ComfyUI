@@ -5,7 +5,7 @@ import time
 import pickle
 import signal
 from functools import partial
-from typing import Any, Callable, TypeVar, Optional, cast
+from typing import Any, TypeVar, Optional, cast
 from torch import Tensor, multiprocessing as mlp, device
 from comfy.model_management import get_torch_device
 from json_gui import p_logger, c_logger
@@ -111,7 +111,7 @@ class NodeExecutor:
         node_init_args: CreationDict,
         node_exec_args: dict[str, Any],
         raw_nodes_serialized: dict[str, tuple[type[MimicNode], CreationDict]],
-        save_call: Callable[[SavedImagesDict, Tensor, str], None],
+        save_call: SaveImageCallable,
         save_data: SavedImagesDict,
     ) -> tuple[str, SavedImagesDict, Any]:
         """_summary_
@@ -142,8 +142,8 @@ class NodeExecutor:
             logging.info("Executing %s in child process", node_cls.__name__)
             # Reconstruct the main node from its class and init args
             node = node_cls(*node_init_args["args"], **node_init_args["kwargs"])
-            node.save_tensor = lambda tensor, identifier=node.__class__.key(), data=save_data: save_call(
-                data, tensor, identifier
+            node.save_tensor = lambda tensor, identifier=node.__class__.key(), is_temp=True: save_call(
+                save_data, tensor, identifier, is_temp=is_temp
             )
 
             # Reconstruct raw_nodes and add them to exec_args
@@ -170,7 +170,7 @@ class NodeExecutor:
         node_init_args: CreationDict,
         node_exec_args: dict[str, Any],
         raw_nodes_serialized: dict[str, tuple[type[MimicNode], CreationDict]],
-        save_call: Callable[[SavedImagesDict, Tensor, str], None],
+        save_call: SaveImageCallable,
         save_data: SavedImagesDict,
         result_queue: mlp.Queue,
     ) -> None:
@@ -194,7 +194,7 @@ class NodeExecutor:
         Returns:
             tuple[str, SavedImagesDict, Any]: A tuple containing status, save data, and output or exception.
         """
-
+        MimicNode.enable_multiprocess()
         output_tuple = NodeExecutor._execute_target_node(
             node_cls,
             node_init_args,
