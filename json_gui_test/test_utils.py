@@ -362,3 +362,76 @@ class TestAbsFlow:
         assert len(result) == 1
         # Last image should be in output directory
         assert output_dir in result[-1]
+    
+    def test_absflow_handles_existing_output_files(self, mock_folder_paths, temp_directory):
+        """Test that AbsFlow handles existing output files."""
+        
+        class ConcreteFlow(utils.AbsFlow):
+            def _run_impl(self, steps: int) -> None:
+                pass
+        
+        # Setup directories
+        output_dir = os.path.join(temp_directory, "output")
+        temp_dir = os.path.join(temp_directory, "temp")
+        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        user_dir = os.path.join(temp_directory, "user")
+        os.makedirs(os.path.join(user_dir, "images", "test_path"), exist_ok=True)
+        mock_folder_paths["get_user_directory"].return_value = user_dir
+        mock_folder_paths["get_output_directory"].return_value = output_dir
+        mock_folder_paths["get_temp_directory"].return_value = temp_dir
+        
+        # Create json file
+        json_path = os.path.join(user_dir, "images", "test_path", "test_file.json")
+        with open(json_path, "w") as f:
+            f.write("{}")
+        
+        # Set mock to return empty lists (no existing files)
+        mock_folder_paths["recursive_search"].return_value = ([], [])
+        
+        # Create flow - should handle empty case gracefully
+        flow = ConcreteFlow("test_path", "test_file")
+        
+        # Verify flow was created
+        assert flow._file_identifier.startswith("test_file_r")
+    
+    def test_save_image_handles_file_name_collision(self, mock_folder_paths, temp_directory, sample_image_tensor):
+        """Test that save_image handles file name collisions."""
+        
+        class ConcreteFlow(utils.AbsFlow):
+            def _run_impl(self, steps: int) -> None:
+                pass
+        
+        # Setup directories
+        temp_dir = os.path.join(temp_directory, "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+        mock_folder_paths["get_temp_directory"].return_value = temp_dir
+        
+        user_dir = os.path.join(temp_directory, "user")
+        os.makedirs(os.path.join(user_dir, "images", "test_path"), exist_ok=True)
+        mock_folder_paths["get_user_directory"].return_value = user_dir
+        
+        output_dir = os.path.join(temp_directory, "output")
+        os.makedirs(output_dir, exist_ok=True)
+        mock_folder_paths["get_output_directory"].return_value = output_dir
+        
+        # Create json file
+        json_path = os.path.join(user_dir, "images", "test_path", "test_file.json")
+        with open(json_path, "w") as f:
+            f.write("{}")
+        
+        flow = ConcreteFlow("test_path", "test_file")
+        
+        # Create first image
+        flow.save_image(sample_image_tensor, "test_id", steps=10, is_temp=True)
+        first_image = flow._created_images[0]
+        
+        # Save another image - should get different name
+        flow.save_image(sample_image_tensor, "test_id", steps=10, is_temp=True)
+        second_image = flow._created_images[1]
+        
+        # Names should be different
+        assert first_image != second_image
+        assert os.path.exists(first_image)
+        assert os.path.exists(second_image)
