@@ -300,5 +300,11 @@ Flows should let this propagate; the GUI catches it to stop execution gracefully
 
 ---
 
+## Configuration
+
+*   **`pyproject.toml`** (root): Contains configurations for **pylint**, **mypy**, and **pytest**. All linting and testing tools use this as their primary config file.
+
+---
+
 ## Do Not Modify
 *   Never do directing changes to the core `comfy/` directory or root `nodes.py`. Focus development within `json_gui/`.

@@ -681,3 +681,9 @@ This allows you to:
 | `CUDA out of memory` | Tensors not released | Ensure multi-process mode is enabled |
 | `Queue.Empty` after timeout | Child process crashed | Check logs for exceptions in child |
 | Cached results returned | Inputs match previous call | Call `node.update()` to force refresh |
+
+---
+
+## Configuration Files
+
+* **`pyproject.toml`** (root): Contains configurations for **pylint**, **mypy**, and **pytest**. All linting, type-checking, and testing tools use this as their primary configuration file.

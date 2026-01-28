@@ -78,3 +78,18 @@ exclude = [
     "**/pylint/**",
     "src/tests/**"
 ]
+
+
+[tool.pytest.ini_options]
+testpaths = ["json_gui_test"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=json_gui --cov-report=term-missing --cov-report=html:coverage_html --cov-fail-under=95 --html=report.html"
+
+[tool.coverage.run]
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+    "*/site-packages/*",
+]
