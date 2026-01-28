@@ -109,10 +109,11 @@ def mock_torch_device():
 @pytest.fixture
 def mock_comfy_model_management():
     """Mock comfy.model_management module."""
-    with patch("comfy.model_management.intermediate_device") as mock_device, \
-         patch("comfy.model_management.get_torch_device") as mock_get_device, \
-         patch("comfy.model_management.soft_empty_cache") as mock_cache, \
-         patch("comfy.model_management.unload_all_models") as mock_unload:
+    with patch("json_gui.mimic_classes.comfy.model_management.intermediate_device") as mock_device, \
+         patch("json_gui.mimic_classes.comfy.model_management.get_torch_device") as mock_get_device, \
+         patch("json_gui.mimic_classes.comfy.model_management.soft_empty_cache") as mock_cache, \
+         patch("json_gui.mimic_classes.comfy.model_management.unload_all_models") as mock_unload:
+        # Return real torch.device objects, not MagicMock
         mock_device.return_value = torch.device("cpu")
         mock_get_device.return_value = torch.device("cpu")
         yield {
