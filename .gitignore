@@ -31,3 +31,5 @@ out/
 runs
 .python-version
 poetry.lock
+.coverage
+coverage_html/
