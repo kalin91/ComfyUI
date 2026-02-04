@@ -4,7 +4,9 @@ Main entry point for JSON Manager GUI.
 
 import os
 import sys
+import comfy.options
 
+comfy.options.enable_args_parsing()
 # CRITICAL: Configure sys.path BEFORE any other imports.
 # This ensures that 'utils' resolves to ComfyUI/utils/ (the package)
 # and not to comfy/utils.py or json_gui/utils.py.
@@ -27,4 +29,6 @@ if os.getcwd() != _comfyui_root:
 # Cleanup temporary variables
 del _current_file, _json_gui_dir, _comfyui_root
 
-import json_gui.server as _  # noqa: F401, E402 pylint: disable=C0413
+from json_gui.json_manager import json_manager_starter  # noqa: F401, E402 pylint: disable=C0413
+
+json_manager_starter.apply_custom_paths()

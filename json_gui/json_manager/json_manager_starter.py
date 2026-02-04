@@ -4,16 +4,19 @@ import itertools
 import logging
 import os
 import shutil
+import multiprocessing as mp
 import folder_paths
 import utils.extra_config
 from comfy.cli_args import args
+import json_gui.p_logger as _  # noqa: F401
 
 
 def cleanup_temp() -> None:
     """Cleans up the temporary directory used during processing."""
-    temp_dir = folder_paths.get_temp_directory()
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    if mp.current_process().name == "MainProcess":
+        temp_dir = folder_paths.get_temp_directory()
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def apply_custom_paths() -> None:

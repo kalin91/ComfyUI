@@ -10,6 +10,50 @@ from typing import Any, Callable
 __all__ = ["show_loading_modal"]
 
 
+class TpLevProWin(tk.Toplevel):
+    """Toplevel window with a progress window attribute."""
+
+    @property
+    def progress_window(self) -> tk.Toplevel:
+        """Get the progress window."""
+        return self._progress_window
+
+    def __init__(self, parent: tk.Tk, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+        self._progress_window: tk.Toplevel = self._show_progress_window(parent)
+
+    @staticmethod
+    def _show_progress_window(parent: tk.Tk) -> tk.Toplevel:
+        """Show a progress window with logging output redirected to it."""
+        win = tk.Toplevel(parent)
+        win.title("Progreso")
+
+        width = win.winfo_screenwidth()
+        height = 400
+
+        win.geometry(f"{width}x{height}")
+
+        text = tk.Text(win, height=15, width=80, state="disabled")
+        text_scrollbar = ttk.Scrollbar(win, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=text_scrollbar.set)
+        text_scrollbar.pack(side="right", fill="y")
+        text.pack(fill="both", expand=True)
+
+        writer = _TkTextWriter(text)
+
+        # ---- logging ----
+        handler = _TkTextHandler(writer)
+        handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        logging.getLogger().addHandler(handler)
+        logging.getLogger().setLevel(logging.INFO)
+
+        # ---- stdout / stderr ----
+        sys.stdout = _TextRedirector(writer, sys.__stdout__)
+        sys.stderr = _TextRedirector(writer, sys.__stderr__)
+
+        return win
+
+
 class _TkTextWriter:
     """Writer that outputs to a Tkinter text widget."""
 
@@ -57,7 +101,13 @@ class _TkTextHandler(logging.Handler):
 
     def emit(self, record) -> None:
         """Emit a log record to the TkTextWriter."""
-        msg = self.format(record) + "\n"
+        # Check if this is a progress bar update from child process
+        is_progress = getattr(record, "is_progress", False)
+        if is_progress:
+            # For progress bars: use \r prefix (no level prefix, no newline)
+            msg = "\r" + record.getMessage()
+        else:
+            msg = self.format(record) + "\n"
         self.writer.write_to_widget(msg)
 
 
@@ -84,44 +134,13 @@ class _TextRedirector:
         return getattr(self.orig_streams[0], name)
 
 
-def _show_progress_window(parent: tk.Widget | None = None) -> tk.Toplevel:
-    """Show a progress window with logging output redirected to it."""
-    win = tk.Toplevel(parent)
-    win.title("Progreso")
-
-    width = win.winfo_screenwidth()
-    height = 400
-
-    win.geometry(f"{width}x{height}")
-
-    text = tk.Text(win, height=15, width=80, state="disabled")
-    text_scrollbar = ttk.Scrollbar(win, orient="vertical", command=text.yview)
-    text.configure(yscrollcommand=text_scrollbar.set)
-    text_scrollbar.pack(side="right", fill="y")
-    text.pack(fill="both", expand=True)
-
-    writer = _TkTextWriter(text)
-
-    # ---- logging ----
-    handler = _TkTextHandler(writer)
-    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-    logging.getLogger().addHandler(handler)
-    logging.getLogger().setLevel(logging.INFO)
-
-    # ---- stdout / stderr ----
-    sys.stdout = _TextRedirector(writer, sys.__stdout__)
-    sys.stderr = _TextRedirector(writer, sys.__stderr__)
-
-    return win
-
-
-def _call_wrapper(parent: tk.Widget, fun: Callable, loading_win: tk.Toplevel, wait: bool) -> Callable:
+def _call_wrapper(parent: tk.Tk, fun: Callable, loading_win: TpLevProWin, wait: bool) -> Callable:
     """Wrapper to call a function with arguments."""
 
     def cleanup() -> None:
         """Cleanup function to close loading and progress windows."""
         if loading_win:
-            progress_win = getattr(loading_win, "progress_window", None)
+            progress_win = loading_win.progress_window
             try:
                 if loading_win.winfo_exists():
                     loading_win.destroy()
@@ -216,10 +235,10 @@ def _close_progress_dialog(progress_win: tk.Toplevel, wait: bool) -> None:
         logging.exception("Error in close progress dialog: %s", e)
 
 
-def _create_loading_modal(parent, message="Loading...") -> tk.Toplevel:
+def _create_loading_modal(parent: tk.Tk, message="Loading...") -> TpLevProWin:
     """Show a modal loading window."""
     try:
-        loading_win = tk.Toplevel(parent)
+        loading_win = TpLevProWin(parent)
         loading_win.title("")
         loading_win.geometry("250x80")
         loading_win.transient(parent)
@@ -240,7 +259,6 @@ def _create_loading_modal(parent, message="Loading...") -> tk.Toplevel:
         x_scroll = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
         text_widget.configure(xscrollcommand=x_scroll.set)
         x_scroll.pack(side="bottom", fill="x")
-        loading_win.progress_window = _show_progress_window(parent)
         return loading_win
     except Exception as e:
         logging.exception("Error showing loading modal: %s", e)
@@ -248,7 +266,7 @@ def _create_loading_modal(parent, message="Loading...") -> tk.Toplevel:
 
 
 def show_loading_modal(
-    parent: tk.Widget,
+    parent: tk.Tk,
     on_call: Callable,
     args: tuple,
     message: str = "Loading...",
@@ -276,7 +294,8 @@ def show_loading_modal(
                 log_queue_poll()
             except Exception:
                 pass
-        parent.after(100, parent.update())
+        parent.update()
+        # time.sleep(0.01)  # Optional small sleep to reduce CPU usage
 
 
 def auto_close_info(parent, title, message, timeout=5000) -> None:

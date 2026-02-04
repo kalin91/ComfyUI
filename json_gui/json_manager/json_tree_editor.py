@@ -9,11 +9,32 @@ import logging
 import tkinter as tk
 import random
 from tkinter import ttk, messagebox
-from typing import Any, Callable
+from typing import Any, Callable, Optional, cast
 from PIL import Image, ImageTk
 import json_gui.utils as gui_utils
+from json_gui.typedicts import BodyDict, is_bodydict
 from json_gui.json_manager.scroll_utils import bind_frame_scroll_events, bind_scroll_events
-from json_gui.constants import COMBO_CONSTANTS, JSON_CANVAS_NAME, JSON_SCROLL_FRAME_NAME
+from json_gui.constants import get_combo_constants, JSON_CANVAS_NAME, JSON_SCROLL_FRAME_NAME
+
+
+class StickyCanvas(tk.Canvas):
+    """A Canvas that supports sticky headers/columns."""
+
+    _image: Optional[ImageTk.PhotoImage]
+
+    @property
+    def image(self) -> Optional[ImageTk.PhotoImage]:
+        """Get the current image."""
+        return self._image
+
+    @image.setter
+    def image(self, value: ImageTk.PhotoImage) -> None:
+        """Set the current image."""
+        self._image = value
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._image = None
 
 
 def open_preview(file_path: str, frame: ttk.Widget) -> None:
@@ -65,7 +86,7 @@ def open_preview(file_path: str, frame: ttk.Widget) -> None:
             except Exception:
                 img = img.resize((new_w, new_h))
 
-        canvas = tk.Canvas(container, highlightthickness=0, yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+        canvas = StickyCanvas(container, highlightthickness=0, yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
 
         v_scroll.config(command=canvas.yview)
         h_scroll.config(command=canvas.xview)
@@ -76,7 +97,7 @@ def open_preview(file_path: str, frame: ttk.Widget) -> None:
 
         photo = ImageTk.PhotoImage(img)
         image_item = canvas.create_image(0, 0, anchor="nw", image=photo)
-        canvas.image = photo  # Keep reference
+        canvas.image = photo
 
         # Set initial scrollregion
         canvas.config(scrollregion=(0, 0, img.width, img.height))
@@ -279,10 +300,10 @@ def _create_combo_entry(
         if "values" in body[key]:
             combo_values = body[key]["values"]
         else:
-            assert body[key]["constant"] in COMBO_CONSTANTS, (
+            assert body[key]["constant"] in get_combo_constants(), (
                 f"Constant '{body[key]['constant']}' not found " f"in constants dictionary for combo type key '{key}'"
             )
-            combo_values = COMBO_CONSTANTS[body[key]["constant"]]
+            combo_values = get_combo_constants()[body[key]["constant"]]
         combo = ttk.Combobox(frame, width=57, state="readonly")
         combo["values"] = combo_values
         if value in combo_values:
@@ -300,12 +321,12 @@ def _create_combo_entry(
 
 
 def _create_multiline_text_widget(
-    parent: ttk.Widget,
+    parent: tk.Widget,
     key: str,
     value: Any,
     full_key: str,
     indent: int,
-    on_text_modified: Callable[[tk.Event], None],
+    notify_change: Callable[[], None],
     text_entries: dict[str, tk.Text],
 ) -> None:
     """Create a multiline text widget."""
@@ -321,7 +342,7 @@ def _create_multiline_text_widget(
         text_widget.configure(yscrollcommand=text_scrollbar.set)
 
         text_widget.insert("1.0", str(value))
-        text_widget.bind("<<Modified>>", on_text_modified)
+        text_widget.bind("<KeyRelease>", lambda e: notify_change())
 
         # Bind mousewheel directly to text widget (not bind_all)
         bind_scroll_events(text_widget)
@@ -352,10 +373,10 @@ def _create_number_validator(
         try:
             last_value = l_val[0][0] if l_val[0] else None
             assert last_value or last_value == 0, "Last value not found for validation"
-            entry_widget: ttk.Spinbox = l_val[1][0] if l_val[1] else None
+            entry_widget: ttk.Spinbox = l_val[1][0]
             assert entry_widget, "Entry widget not found for validation"
 
-            def reset_value(to_val: str = None) -> None:
+            def reset_value(to_val: Optional[str] = None) -> None:
                 """Reset entry to last valid value."""
                 to_val = str(last_value) if to_val is None else to_val
                 entry_widget.set(to_val)
@@ -436,11 +457,11 @@ def _create_randomize_handler(
         try:
             on_change()
             if bt == "int":
-                val = random.randint(int(mn), int(mx))
-                e.set(val)
+                vali = random.randint(int(mn), int(mx))
+                e.set(vali)
             else:
-                val = random.uniform(float(mn), float(mx))
-                e.set(fmt % val)
+                valf = random.uniform(float(mn), float(mx))
+                e.set(fmt % valf)
         except Exception as ex:
             logging.exception("Error setting random value")
             raise ex
@@ -515,10 +536,26 @@ def _create_numeric_entry(
 class JSONTreeEditor(ttk.Frame):
     """A hierarchical, editable view for JSON data."""
 
-    def __init__(self, parent: tk.Widget, on_change: Callable[[], None], on_refresh: Callable[[], bool]) -> None:
+    _body: Optional[BodyDict]
+
+    @property
+    def body(self) -> BodyDict:
+        """Get the body definition."""
+        if self._body is None:
+            raise ValueError("Try to access body when it is not set")
+        return self._body
+
+    @body.setter
+    def body(self, value: BodyDict) -> None:
+        """Set the body definition."""
+        if not is_bodydict(value):
+            raise ValueError("body must conform to BodyDict structure")
+        self._body = value
+
+    def __init__(self, parent: tk.Widget, on_change: Callable[[bool], None], on_refresh: Callable[[], bool]) -> None:
         super().__init__(parent)
         self.data: dict[str, Any] = {}
-        self.body: dict[str, Any] = {}
+        self._body = None
         self.string_entries: dict[str, tk.Entry] = {}
         self.int_entries: dict[str, tk.Entry] = {}
         self.float_entries: dict[str, tk.Entry] = {}
@@ -527,7 +564,7 @@ class JSONTreeEditor(ttk.Frame):
         self.list_entries: dict[str, list[dict[str, Any]]] = {}
         self.file_entries: dict[str, ttk.Combobox] = {}
         self.combo_entries: dict[str, ttk.Combobox] = {}
-        self._on_change = on_change  # Callback when any value changes
+        self._on_change: Callable[[bool], None] = on_change  # Callback when any value changes
         self._on_refresh = on_refresh  # Callback to check for unsaved changes
 
         # Create canvas with scrollbar
@@ -557,7 +594,7 @@ class JSONTreeEditor(ttk.Frame):
         # Bind mousewheel only when mouse is over this widget
         bind_frame_scroll_events(self, self.canvas, True)
 
-    def load_data(self, data: dict[str, Any], body: dict[str, Any]) -> None:
+    def load_data(self, data: dict[str, Any], body: BodyDict) -> None:
         """Load JSON data into the editor."""
         self.data = data
         self.body = body
@@ -585,7 +622,7 @@ class JSONTreeEditor(ttk.Frame):
         body_type = body_def.get("type", "string")
         if body_type == "object":
             props = body_def.get("props", {})
-            result = {}
+            result: dict[str, Any] = {}
             for prop_key, prop_def in props.items():
                 if prop_def.get("isArray", False):
                     result[prop_key] = []
@@ -678,7 +715,7 @@ class JSONTreeEditor(ttk.Frame):
                         frame,
                         text="+ First",
                         font=("Arial", 7),
-                        command=lambda k=full_key, bdef=item_body_def: self._add_array_item(k, bdef, True),
+                        command=cast(Callable[[], None],lambda k=full_key, bdef=item_body_def: self._add_array_item(k, bdef, True),)
                     )
                     add_first_btn.pack(side="left", padx=(10, 2))
 
@@ -687,7 +724,7 @@ class JSONTreeEditor(ttk.Frame):
                         frame,
                         text="+ Last",
                         font=("Arial", 7),
-                        command=lambda k=full_key, bdef=item_body_def: self._add_array_item(k, bdef, False),
+                        command=cast(Callable[[], None],lambda k=full_key, bdef=item_body_def: self._add_array_item(k, bdef, False),)
                     )
                     add_last_btn.pack(side="left", padx=2)
 
@@ -706,7 +743,7 @@ class JSONTreeEditor(ttk.Frame):
                             text="Delete",
                             font=("Arial", 7),
                             fg="red",
-                            command=lambda k=full_key, idx=i: self._delete_array_item(k, idx),
+                            command=cast(Callable[[], None],lambda k=full_key, idx=i: self._delete_array_item(k, idx)),
                         )
                         delete_btn.pack(side="left", padx=(10, 0))
 
@@ -749,7 +786,7 @@ class JSONTreeEditor(ttk.Frame):
                             value,
                             full_key,
                             indent,
-                            self._on_text_modified,
+                            self._notify_change,
                             self.text_entries,
                         )
 
@@ -903,12 +940,4 @@ class JSONTreeEditor(ttk.Frame):
 
     def _notify_change(self) -> None:
         """Notify that a value has changed."""
-        if self._on_change:
-            self._on_change(True)
-
-    def _on_text_modified(self, event: tk.Event) -> None:
-        """Handle text widget modification."""
-        widget = event.widget
-        if widget.edit_modified():
-            self._notify_change()
-            widget.edit_modified(False)
+        self._on_change(True)

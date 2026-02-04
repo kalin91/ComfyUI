@@ -23,49 +23,73 @@ lint.select = [
 ]
 exclude = ["*.ipynb", "**/generated/*.pyi"]
 
-[tool.pylint]
-master.py-version = "3.10"
-master.extension-pkg-allow-list = [
-  "pydantic",
+[tool.mypy]
+check_untyped_defs = true
+python_version = "3.12"
+disable_error_code = ["import-untyped","override"]
+mypy_path = "./out"
+# Limit default type-checking scope to json_gui only.
+files = ["json_gui"]
+
+# Don't type-check imported project modules outside the target scope.
+# This keeps the report focused on json_gui, but it can reduce cross-module type safety.
+follow_imports = "skip"
+exclude = [
+    '\.venv/.*',
+    '.+\.pyi',
+    '/opt/.*',
+    '.*/site-packages/.*',
+    'custom_nodes/_ComfyUI-Logic\.disabled/.*',
+    'custom_nodes/_ComfyUI_essentials\.disabled/.*',
+    'workspace_temp/.*',
+    'src/tests/.*',
+    'tests/execution/testing_nodes/testing-pack/.*',
 ]
-reports.output-format = "colorized"
-similarities.ignore-imports = "yes"
-messages_control.disable = [
-  "missing-module-docstring",
-  "missing-class-docstring",
-  "missing-function-docstring",
-  "line-too-long",
-  "too-few-public-methods",
-  "too-many-public-methods",
-  "too-many-instance-attributes",
-  "too-many-positional-arguments",
-  "broad-exception-raised",
-  "too-many-lines",
-  "invalid-name",
-  "unused-argument",
-  "broad-exception-caught",
-  "consider-using-with",
-  "fixme",
-  "too-many-statements",
-  "too-many-branches",
-  "too-many-locals",
-  "too-many-arguments",
-  "too-many-return-statements",
-  "too-many-nested-blocks",
-  "duplicate-code",
-  "abstract-method",
-  "superfluous-parens",
-  "arguments-differ",
-  "redefined-builtin",
-  "unnecessary-lambda",
-  "dangerous-default-value",
-  "invalid-overridden-method",
-  # next warnings should be fixed in future
-  "bad-classmethod-argument",  # Class method should have 'cls' as first argument
-  "wrong-import-order",  # Standard imports should be placed before third party imports
-  "ungrouped-imports",
-  "unnecessary-pass",
-  "unnecessary-lambda-assignment",
-  "no-else-return",
-  "unused-variable",
+
+[tool.pylint.master]
+load-plugins = ["workspace_temp.custom_checkers"]
+ignore-patterns = ["\\.venv/.*", ".+\\.pyi", "/opt/.*",".*/site-packages/.*", "workspace_temp/.*"]
+
+[tool.pylint.messages_control]
+enable = ["MissingReturnTypeChecker"]
+disable = ["R0903", "I1101", "C0301", "W0718"]
+
+[tool.pylint.format]
+max-line-length = 200
+
+[tool.pylint.design]
+max-args = 10
+max-positional-arguments = 10
+max-attributes = 12
+
+[tool.flake8]
+max-line-length = 120
+ignore = [
+    "E303", # too many blank lines
+    "E704", # multiple statements on one line (def foo(): bar(); baz())
+]
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "__pycache__",
+    "*.pyc",
+    "*.egg-info",
+    "**/pylint/**",
+    "src/tests/**"
+]
+
+
+[tool.pytest.ini_options]
+testpaths = ["json_gui_test"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=json_gui --cov-report=term-missing --cov-report=html:coverage_html --cov-fail-under=95 --html=report.html"
+
+[tool.coverage.run]
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+    "*/site-packages/*",
 ]

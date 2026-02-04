@@ -40,20 +40,20 @@ def bind_scroll_events(widget: tk.Widget, bind_all: bool = False) -> None:
     """Bind scroll events to a widget so scrolling works when hovering over it."""
 
     try:
-        bind_call: Callable[[str, Callable[[tk.Event], str]], None] = widget.bind_all if bind_all else widget.bind
+        bind_call: Callable[[str, Callable[[tk.Event], str]], str] = widget.bind_all if bind_all else widget.bind
 
         if not bind_all:
             _unbind_scroll_events(widget, True)
 
-        on_wheel: Callable[[tk.Event], str] = lambda event: _on_mousewheel(widget, event)
-        on_shift_wheel: Callable[[tk.Event], str] = lambda event: _on_shift_mousewheel(widget, event)
         if isinstance(widget, tk.YView):
+            on_wheel: Callable[[tk.Event], str] = lambda event: _on_mousewheel(widget, event)
             # Windows/MacOS
             bind_call("<MouseWheel>", on_wheel)
             # Linux scroll up/down
             bind_call("<Button-4>", on_wheel)
             bind_call("<Button-5>", on_wheel)
         if isinstance(widget, tk.XView):
+            on_shift_wheel: Callable[[tk.Event], str] = lambda event: _on_shift_mousewheel(widget, event)
             # Shift+scroll for horizontal (Windows/MacOS)
             bind_call("<Shift-MouseWheel>", on_shift_wheel)
             # Linux horizontal scroll
